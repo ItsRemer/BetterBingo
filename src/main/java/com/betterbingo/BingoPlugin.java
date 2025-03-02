@@ -104,23 +104,24 @@ public class BingoPlugin extends Plugin {
     private DrawManager drawManager;
     @Inject
     private ImageCapture imageCapture;
+    @Inject
+    private Gson gson;
 
     @Getter
     private final List<BingoItem> items = new ArrayList<>();
     private final Set<Integer> recentlyKilledNpcs = new HashSet<>();
     private BingoPanel panel;
     private NavigationButton navButton;
-    private final Gson gson = new Gson();
 
     @Override
     protected void startUp() throws Exception {
         panel = injector.getInstance(BingoPanel.class);
 
-        final BufferedImage icon = ImageUtil.loadImageResource(getClass(), "/icon.png");
+        final BufferedImage icon = ImageUtil.loadImageResource(getClass(), "panel_icon.png");
 
         navButton = NavigationButton.builder()
-                .icon(icon)
                 .tooltip("Bingo")
+                .icon(icon)
                 .priority(5)
                 .panel(panel)
                 .build();
@@ -148,11 +149,11 @@ public class BingoPlugin extends Plugin {
             return;
         }
 
-        if (event.getKey().equals("itemSourceType") || 
-            event.getKey().equals("itemList") || 
-            event.getKey().equals("remoteUrl")) {
+        if (event.getKey().equals("itemSourceType") ||
+                event.getKey().equals("itemList") ||
+                event.getKey().equals("remoteUrl")) {
             loadItems();
-            
+
             if (config.itemSourceType() == BingoConfig.ItemSourceType.REMOTE) {
                 scheduleRemoteUpdate();
             }
@@ -779,31 +780,31 @@ public class BingoPlugin extends Plugin {
             clientThread.invoke(() -> {
                 if (client.getLocalPlayer() != null) {
                     client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
-                        "Remote URL is not configured.", "");
+                            "Remote URL is not configured.", "");
                 }
             });
             return;
         }
-        
+
         // Show confirmation dialog
         int result = javax.swing.JOptionPane.showConfirmDialog(
                 panel,
                 "Are you sure you want to update items from the remote URL?\n" +
-                "This might change your item list and could reset progress for items that are no longer on the list.",
+                        "This might change your item list and could reset progress for items that are no longer on the list.",
                 "Update From URL",
                 javax.swing.JOptionPane.YES_NO_OPTION,
                 javax.swing.JOptionPane.WARNING_MESSAGE
         );
-        
+
         // Only proceed if user confirms
         if (result == javax.swing.JOptionPane.YES_OPTION) {
             clientThread.invoke(() -> {
                 if (client.getLocalPlayer() != null) {
                     client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
-                        "Updating bingo items from remote URL...", "");
+                            "Updating bingo items from remote URL...", "");
                 }
             });
-            
+
             executor.execute(this::updateRemoteItems);
         }
     }
