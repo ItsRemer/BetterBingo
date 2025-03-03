@@ -105,4 +105,15 @@ public interface BingoConfig extends Config
     {
         return "";
     }
+
+    @ConfigItem(
+            keyName = "completionNotifications",
+            name = "Completion Notifications",
+            description = "Send special notifications when completing a row, column, or the entire board",
+            position = 7
+    )
+    default boolean completionNotifications()
+    {
+        return true;
+    }
 } 

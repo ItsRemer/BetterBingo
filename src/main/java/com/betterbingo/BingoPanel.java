@@ -23,10 +23,11 @@ import net.runelite.client.util.AsyncBufferedImage;
 import java.awt.FlowLayout;
 import javax.swing.JButton;
 import javax.swing.Box;
+import java.awt.Font;
 
 public class BingoPanel extends PluginPanel
 {
-    private static final ImageIcon CHECK_MARK = new ImageIcon(ImageUtil.loadImageResource(BingoPlugin.class, "check.png"));
+    private static final ImageIcon CHECK_MARK = new ImageIcon(ImageUtil.loadImageResource(BingoPlugin.class, "/check.png"));
     private static final Dimension ITEM_SIZE = new Dimension(32, 32);
     private static final int GRID_SIZE = 5; // 5x5 bingo board
     private static final int GRID_GAP = 2; // Gap between cells
@@ -145,6 +146,8 @@ public class BingoPanel extends PluginPanel
         // Refresh the panel
         controlPanel.revalidate();
         controlPanel.repaint();
+        revalidate();
+        repaint();
     }
 
     @Override
