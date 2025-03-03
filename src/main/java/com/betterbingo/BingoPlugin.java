@@ -61,11 +61,11 @@ import java.util.Set;
 
 import net.runelite.client.util.ImageCapture;
 
+import java.util.function.Consumer;
 import java.util.function.Function;
 
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeoutException;
+import java.util.HashMap;
+
 
 /**
  * Bingo Plugin for RuneLite
@@ -84,7 +84,7 @@ public class BingoPlugin extends Plugin {
     private static final MediaType JSON = MediaType.parse("application/json; charset=utf-8");
     private static final String CONFIG_GROUP = "bingo";
     private static final String CONFIG_KEY_OBTAINED_ITEMS = "obtainedItems";
-    private static final int GRID_SIZE = 5; // 5x5 bingo board
+    private static final int GRID_SIZE = 5;
     private static final int MAX_ITEMS = GRID_SIZE * GRID_SIZE; // Maximum 25 items
 
     @Inject
@@ -114,6 +114,8 @@ public class BingoPlugin extends Plugin {
 
     @Getter
     private final List<BingoItem> items = new ArrayList<>();
+
+    private final Map<String, BingoItem> itemsByName = new HashMap<>();
     private final Set<Integer> recentlyKilledNpcs = new HashSet<>();
     private BingoPanel panel;
     private NavigationButton navButton;
@@ -124,6 +126,7 @@ public class BingoPlugin extends Plugin {
     private static class ChatMessagePattern {
         private final String pattern;
         private final Function<String, String> itemExtractor;
+        @Getter
         private final boolean multiItem;
 
         public ChatMessagePattern(String pattern, Function<String, String> itemExtractor, boolean multiItem) {
@@ -138,10 +141,6 @@ public class BingoPlugin extends Plugin {
 
         public String extractItem(String message) {
             return itemExtractor.apply(message);
-        }
-
-        public boolean isMultiItem() {
-            return multiItem;
         }
     }
 
@@ -192,148 +191,33 @@ public class BingoPlugin extends Plugin {
     );
 
     /**
-     * Configuration for screenshot capture
-     */
-    private static class ScreenshotConfig {
-        private final int maxAttempts;
-        private final int delayBetweenAttempts;
-        private final int timeoutMillis;
-        
-        public ScreenshotConfig(int maxAttempts, int delayBetweenAttempts, int timeoutMillis) {
-            this.maxAttempts = maxAttempts;
-            this.delayBetweenAttempts = delayBetweenAttempts;
-            this.timeoutMillis = timeoutMillis;
-        }
-    }
-    
-    private final ScreenshotConfig screenshotConfig = new ScreenshotConfig(3, 500, 2000);
-    
-    /**
-     * Captures a screenshot with multiple attempts if needed
+     * Extracts an item name from a string, handling quantity indicators and special cases
      * 
-     * @return The captured screenshot or null if capture failed
-     */
-    private BufferedImage captureScreenshot() {
-        if (!config.sendScreenshot()) {
-            log.debug("Screenshot capture disabled by config");
-            return null;
-        }
-
-        // Add a small delay before attempting to capture screenshot
-        // This helps ensure the game UI is fully rendered
-        try {
-            Thread.sleep(200);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-
-        for (int attempt = 1; attempt <= screenshotConfig.maxAttempts; attempt++) {
-            log.debug("Capturing screenshot (attempt {}/{})", attempt, screenshotConfig.maxAttempts);
-            BufferedImage screenshot = captureScreenshotAttempt();
-            
-            if (screenshot != null) {
-                log.debug("Screenshot captured successfully on attempt {}: {}x{}",
-                        attempt, screenshot.getWidth(), screenshot.getHeight());
-                return screenshot;
-            }
-            
-            if (attempt < screenshotConfig.maxAttempts) {
-                try {
-                    log.debug("Waiting {}ms before next screenshot attempt", screenshotConfig.delayBetweenAttempts);
-                    Thread.sleep(screenshotConfig.delayBetweenAttempts);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return null;
-                }
-            }
-        }
-        
-        log.warn("All screenshot capture attempts failed");
-        return null;
-    }
-    
-    /**
-     * Attempts to capture a screenshot once
-     * 
-     * @return The captured screenshot or null if capture failed
-     */
-    private BufferedImage captureScreenshotAttempt() {
-        try {
-            // Check if client is valid
-            if (client == null || client.getCanvas() == null) {
-                log.warn("Cannot capture screenshot: client or canvas is null");
-                return null;
-            }
-            
-            CompletableFuture<BufferedImage> future = new CompletableFuture<>();
-            
-            drawManager.requestNextFrameListener(image -> {
-                try {
-                    // Check if image is null before processing
-                    if (image == null) {
-                        log.warn("Received null image from drawManager");
-                        future.complete(null);
-                        return;
-                    }
-                    
-                    // Get dimensions safely
-                    int width = image.getWidth(null);
-                    int height = image.getHeight(null);
-                    
-                    // Validate dimensions
-                    if (width <= 0 || height <= 0) {
-                        log.warn("Invalid image dimensions: {}x{}", width, height);
-                        future.complete(null);
-                        return;
-                    }
-                    
-                    BufferedImage screenshot = new BufferedImage(
-                            width, height, BufferedImage.TYPE_INT_ARGB);
-                    Graphics graphics = screenshot.getGraphics();
-                    graphics.drawImage(image, 0, 0, null);
-                    graphics.dispose();
-                    
-                    future.complete(screenshot);
-                } catch (Exception e) {
-                    log.warn("Exception while processing screenshot image", e);
-                    future.completeExceptionally(e);
-                }
-            });
-            
-            // Use a slightly longer timeout to ensure we get the frame
-            return future.get(screenshotConfig.timeoutMillis + 500, TimeUnit.MILLISECONDS);
-        } catch (TimeoutException e) {
-            log.warn("Screenshot capture timed out after {}ms", screenshotConfig.timeoutMillis + 500);
-            return null;
-        } catch (InterruptedException e) {
-            log.warn("Screenshot capture interrupted");
-            Thread.currentThread().interrupt();
-            return null;
-        } catch (ExecutionException e) {
-            log.warn("Error during screenshot capture", e.getCause());
-            return null;
-        } catch (Exception e) {
-            log.warn("Unexpected error during screenshot capture", e);
-            return null;
-        }
-    }
-
-    /**
-     * Extracts an item name from a string, handling quantity indicators
+     * @param rawItemName The raw item name to clean
+     * @return The cleaned item name or null if invalid
      */
     private String cleanItemName(String rawItemName) {
-        if (rawItemName == null) {
+        if (rawItemName == null || rawItemName.trim().isEmpty()) {
             return null;
         }
         
         String itemName = rawItemName.trim();
 
+        // Handle "x quantity" format (e.g., "5 x Bones")
         if (itemName.contains(" x ")) {
             if (itemName.indexOf("x ") > 0) {
-                itemName = itemName.substring(0, itemName.indexOf(" x "));
-            } else {
-                itemName = itemName.substring(itemName.indexOf("x ") + 2);
+                itemName = itemName.substring(itemName.indexOf("x ") + 2).trim();
             }
+        }
+        
+        // Handle "quantity x" format (e.g., "5x Bones")
+        if (itemName.matches(".*\\d+x .*")) {
+            itemName = itemName.replaceAll("\\d+x ", "").trim();
+        }
+        
+        // Handle "Item (quantity)" format (e.g., "Bones (5)")
+        if (itemName.matches(".*\\(\\d+\\)$")) {
+            itemName = itemName.replaceAll("\\s*\\(\\d+\\)$", "").trim();
         }
         
         return itemName;
@@ -376,6 +260,7 @@ public class BingoPlugin extends Plugin {
     protected void shutDown() {
         clientToolbar.removeNavigation(navButton);
         items.clear();
+        itemsByName.clear();
         recentlyKilledNpcs.clear();
     }
 
@@ -538,16 +423,20 @@ public class BingoPlugin extends Plugin {
     }
     
     /**
-     * Finds a bingo item by name and marks it as obtained if found
+     * Checks if an item is on the bingo board and processes it if found
      * 
      * @param itemName The name of the item to check
      */
     private void checkForItem(String itemName) {
-        ObtainedItem obtainedItem = findAndMarkItem(itemName);
-        
+        String cleanedItemName = cleanItemName(itemName);
+        if (cleanedItemName == null) {
+            return;
+        }
+
+        ObtainedItem obtainedItem = findAndMarkItem(cleanedItemName);
+
         if (obtainedItem != null) {
             notifyItemObtained(obtainedItem);
-            checkForCompletions(obtainedItem.getIndex());
         }
     }
     
@@ -558,25 +447,25 @@ public class BingoPlugin extends Plugin {
      * @return The obtained item, or null if not found or already obtained
      */
     private ObtainedItem findAndMarkItem(String itemName) {
-        for (int i = 0; i < items.size(); i++) {
-            BingoItem bingoItem = items.get(i);
-            if (bingoItem.isObtained()) {
-                continue;
-            }
+        if (itemName == null) {
+            return null;
+        }
 
-            if (bingoItem.getName().equalsIgnoreCase(itemName)) {
-                bingoItem.setObtained(true);
-                log.debug("Item obtained: {} at index {}", itemName, i);
+        String normalizedName = itemName.toLowerCase();
+        BingoItem bingoItem = itemsByName.get(normalizedName);
+        
+        if (bingoItem != null && !bingoItem.isObtained()) {
+            bingoItem.setObtained(true);
+            int index = items.indexOf(bingoItem);
+            log.debug("Item obtained: {} at index {}", itemName, index);
 
-                if (bingoItem.getItemId() == -1) {
-                    lookupItemId(bingoItem);
-                }
-                
-                saveObtainedItems();
-                SwingUtilities.invokeLater(() -> panel.updateItems(items));
-                
-                return new ObtainedItem(bingoItem, i);
+            if (bingoItem.getItemId() == -1) {
+                lookupItemId(bingoItem);
             }
+            saveObtainedItems();
+            SwingUtilities.invokeLater(() -> panel.updateItems(items));
+            
+            return new ObtainedItem(bingoItem, index);
         }
         
         return null;
@@ -600,205 +489,187 @@ public class BingoPlugin extends Plugin {
      * @param obtainedItem The obtained item
      */
     private void notifyItemObtained(ObtainedItem obtainedItem) {
-        final BingoItem bingoItem = obtainedItem.getBingoItem();
-        final String itemName = bingoItem.getName();
-
-        executor.schedule(() -> {
-            clientThread.invoke(() -> {
-                if (client.getLocalPlayer() != null) {
-                    String chatMessage = "<col=00ff00>BINGO!</col> <col=ffffff>You've obtained:</col> <col=ffff00>" + itemName + "</col>";
-                    client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", chatMessage, "");
-
-                    executor.execute(() -> {
-                        BufferedImage screenshot = null;
-                        if (config.sendScreenshot()) {
-                            screenshot = captureScreenshot();
-                            if (screenshot == null) {
-                                log.warn("Failed to capture screenshot for item: {}, sending text-only notification", itemName);
-                            }
-                        } else {
-                            log.debug("Screenshots disabled, not capturing for item: {}", itemName);
-                        }
-
-                        String message = client.getLocalPlayer().getName() + " has obtained: " + bingoItem.getName();
-                        sendDiscordNotification(message, screenshot, false);
-                    });
-                }
-            });
-        }, 300, TimeUnit.MILLISECONDS);
-    }
-    
-    /**
-     * Checks for completions after an item has been obtained
-     * 
-     * @param obtainedItemIndex The index of the obtained item
-     */
-    private void checkForCompletions(int obtainedItemIndex) {
-        boolean fullBoardComplete = true;
-        for (BingoItem item : items) {
-            if (!item.isObtained()) {
-                fullBoardComplete = false;
-                break;
-            }
-        }
-        
-        if (fullBoardComplete) {
-            notifyBoardCompletion("FULL BOARD COMPLETE! Congratulations!");
+        if (obtainedItem == null) {
             return;
         }
 
+        String itemName = obtainedItem.getName();
+        String gameMessage = String.format("<col=00ff00>Congratulations!</col> <col=ffffff>You've obtained:</col> <col=ffff00>%s</col>", itemName);
+
+        if (client.getGameState() == GameState.LOGGED_IN) {
+            client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", gameMessage, null);
+        }
+        
+        if (config.discordWebhookUrl() != null && !config.discordWebhookUrl().isEmpty()) {
+            String discordMessage = String.format("%s has obtained: %s", 
+                    client.getLocalPlayer() != null ? client.getLocalPlayer().getName() : "Player", 
+                    itemName);
+
+            executor.execute(() -> captureScreenshotAsync(screenshot -> sendDiscordNotification(discordMessage, screenshot, false)));
+        }
+        checkForCompletions(obtainedItem.getIndex());
+    }
+    
+    /**
+     * Captures a screenshot asynchronously and calls the callback with the result
+     * 
+     * @param callback The callback to call with the captured screenshot (or null if disabled/failed)
+     */
+    private void captureScreenshotAsync(Consumer<BufferedImage> callback) {
+        if (!config.sendScreenshot()) {
+            log.debug("Screenshot capture disabled by config");
+            callback.accept(null);
+            return;
+        }
+        
+        if (client.getGameState() == GameState.LOGIN_SCREEN) {
+            log.info("Login screen screenshot prevented");
+            callback.accept(null);
+            return;
+        }
+
+        drawManager.requestNextFrameListener(image -> {
+            executor.submit(() -> {
+                try {
+                    if (image == null) {
+                        log.warn("Received null image from drawManager");
+                        callback.accept(null);
+                        return;
+                    }
+                    
+                    int width = image.getWidth(null);
+                    int height = image.getHeight(null);
+                    
+                    if (width <= 0 || height <= 0) {
+                        log.warn("Invalid image dimensions: {}x{}", width, height);
+                        callback.accept(null);
+                        return;
+                    }
+                    
+                    BufferedImage screenshot = new BufferedImage(
+                            width, height, BufferedImage.TYPE_INT_ARGB);
+                    Graphics graphics = screenshot.getGraphics();
+                    graphics.drawImage(image, 0, 0, null);
+                    graphics.dispose();
+                    
+                    log.debug("Screenshot captured successfully: {}x{}", 
+                            screenshot.getWidth(), screenshot.getHeight());
+                    
+                    callback.accept(screenshot);
+                } catch (Exception e) {
+                    log.warn("Exception while processing screenshot image", e);
+                    callback.accept(null);
+                }
+            });
+        });
+    }
+    
+    /**
+     * Checks for completions in the bingo board based on the last obtained item
+     * 
+     * @param obtainedItemIndex The index of the last obtained item
+     */
+    private void checkForCompletions(int obtainedItemIndex) {
         int row = obtainedItemIndex / GRID_SIZE;
         int col = obtainedItemIndex % GRID_SIZE;
 
-        boolean rowComplete = true;
-        boolean colComplete = true;
-
-        for (int c = 0; c < GRID_SIZE; c++) {
-            int index = row * GRID_SIZE + c;
-            if (index >= items.size() || !items.get(index).isObtained()) {
-                rowComplete = false;
-                break;
-            }
+        if (isRowComplete(row)) {
+            notifyBoardCompletion("Row " + (row + 1) + " complete!");
         }
 
-        for (int r = 0; r < GRID_SIZE; r++) {
-            int index = r * GRID_SIZE + col;
-            if (index >= items.size() || !items.get(index).isObtained()) {
-                colComplete = false;
-                break;
-            }
+        if (isColumnComplete(col)) {
+            notifyBoardCompletion("Column " + (col + 1) + " complete!");
         }
 
-        boolean diag1Complete = false;
-        if (row == col) {
-            diag1Complete = true;
-            for (int i = 0; i < GRID_SIZE; i++) {
-                int index = i * GRID_SIZE + i;
-                if (index >= items.size() || !items.get(index).isObtained()) {
-                    diag1Complete = false;
-                    break;
-                }
-            }
+        boolean onDiagonal1 = (row == col);
+        if (onDiagonal1 && isDiagonal1Complete()) {
+            notifyBoardCompletion("Diagonal (top-left to bottom-right) complete!");
         }
 
-        boolean diag2Complete = false;
-        if (row + col == GRID_SIZE - 1) {
-            diag2Complete = true;
-            for (int i = 0; i < GRID_SIZE; i++) {
-                int index = i * GRID_SIZE + (GRID_SIZE - 1 - i);
-                if (index >= items.size() || !items.get(index).isObtained()) {
-                    diag2Complete = false;
-                    break;
-                }
-            }
+        boolean onDiagonal2 = (row + col == GRID_SIZE - 1);
+        if (onDiagonal2 && isDiagonal2Complete()) {
+            notifyBoardCompletion("Diagonal (top-right to bottom-left) complete!");
         }
 
-        final boolean finalRowComplete = rowComplete;
-        final boolean finalColComplete = colComplete;
-        final boolean finalDiag1Complete = diag1Complete;
-        final boolean finalDiag2Complete = diag2Complete;
-        final int finalRow = row;
-        final int finalCol = col;
-
-        executor.schedule(() -> {
-            if (finalRowComplete) {
-                notifyBoardCompletion("ROW " + (finalRow + 1) + " COMPLETE! Bingo!");
-            }
-            
-            if (finalColComplete) {
-                notifyBoardCompletion("COLUMN " + (finalCol + 1) + " COMPLETE! Bingo!");
-            }
-            
-            if (finalDiag1Complete) {
-                notifyBoardCompletion("DIAGONAL 1 COMPLETE! Bingo!");
-            }
-            
-            if (finalDiag2Complete) {
-                notifyBoardCompletion("DIAGONAL 2 COMPLETE! Bingo!");
-            }
-        }, 500, TimeUnit.MILLISECONDS);
-
-        if (!rowComplete && !colComplete && !diag1Complete && !diag2Complete && config.completionNotifications()) {
-            executor.schedule(() -> checkForCompletionsGeneral(), 1000, TimeUnit.MILLISECONDS);
+        if (isFullBoardComplete()) {
+            notifyBoardCompletion("BINGO! Full board complete!");
         }
     }
     
     /**
-     * Checks for completed rows, columns, and diagonals across the entire board
+     * Checks if the full board is complete
+     * 
+     * @return True if all items are obtained
      */
-    private void checkForCompletionsGeneral() {
-        if (items.size() <= 0) {
-            return;
-        }
-
-        boolean fullBoardComplete = true;
+    private boolean isFullBoardComplete() {
         for (BingoItem item : items) {
             if (!item.isObtained()) {
-                fullBoardComplete = false;
-                break;
+                return false;
             }
         }
-        
-        if (fullBoardComplete) {
-            notifyBoardCompletion("FULL BOARD COMPLETE! Congratulations!");
-            return;
-        }
-
-        for (int row = 0; row < GRID_SIZE; row++) {
-            boolean rowComplete = true;
-            for (int col = 0; col < GRID_SIZE; col++) {
-                int index = row * GRID_SIZE + col;
-                if (index >= items.size() || !items.get(index).isObtained()) {
-                    rowComplete = false;
-                    break;
-                }
-            }
-            
-            if (rowComplete) {
-                notifyBoardCompletion("ROW " + (row + 1) + " COMPLETE! Bingo!");
+        return true;
+    }
+    
+    /**
+     * Checks if a row is complete
+     * 
+     * @param row The row to check
+     * @return True if the row is complete
+     */
+    private boolean isRowComplete(int row) {
+        for (int c = 0; c < GRID_SIZE; c++) {
+            int index = row * GRID_SIZE + c;
+            if (index >= items.size() || !items.get(index).isObtained()) {
+                return false;
             }
         }
-
-        for (int col = 0; col < GRID_SIZE; col++) {
-            boolean colComplete = true;
-            for (int row = 0; row < GRID_SIZE; row++) {
-                int index = row * GRID_SIZE + col;
-                if (index >= items.size() || !items.get(index).isObtained()) {
-                    colComplete = false;
-                    break;
-                }
-            }
-            
-            if (colComplete) {
-                notifyBoardCompletion("COLUMN " + (col + 1) + " COMPLETE! Bingo!");
+        return true;
+    }
+    
+    /**
+     * Checks if a column is complete
+     * 
+     * @param col The column to check
+     * @return True if the column is complete
+     */
+    private boolean isColumnComplete(int col) {
+        for (int r = 0; r < GRID_SIZE; r++) {
+            int index = r * GRID_SIZE + col;
+            if (index >= items.size() || !items.get(index).isObtained()) {
+                return false;
             }
         }
-
-        boolean diag1Complete = true;
+        return true;
+    }
+    
+    /**
+     * Checks if the main diagonal (top-left to bottom-right) is complete
+     * 
+     * @return True if the diagonal is complete
+     */
+    private boolean isDiagonal1Complete() {
         for (int i = 0; i < GRID_SIZE; i++) {
             int index = i * GRID_SIZE + i;
             if (index >= items.size() || !items.get(index).isObtained()) {
-                diag1Complete = false;
-                break;
+                return false;
             }
         }
-        
-        if (diag1Complete) {
-            notifyBoardCompletion("DIAGONAL 1 COMPLETE! Bingo!");
-        }
-
-        boolean diag2Complete = true;
+        return true;
+    }
+    
+    /**
+     * Checks if the other diagonal (top-right to bottom-left) is complete
+     * 
+     * @return True if the diagonal is complete
+     */
+    private boolean isDiagonal2Complete() {
         for (int i = 0; i < GRID_SIZE; i++) {
             int index = i * GRID_SIZE + (GRID_SIZE - 1 - i);
             if (index >= items.size() || !items.get(index).isObtained()) {
-                diag2Complete = false;
-                break;
+                return false;
             }
         }
-        
-        if (diag2Complete) {
-            notifyBoardCompletion("DIAGONAL 2 COMPLETE! Bingo!");
-        }
+        return true;
     }
 
     /**
@@ -807,64 +678,35 @@ public class BingoPlugin extends Plugin {
      * @param message The completion message
      */
     private void notifyBoardCompletion(String message) {
-        log.debug("Sending board completion notification: {}", message);
-
-        final String formattedMessage = getMessageType(message);
-
-        clientThread.invoke(() -> {
-            if (client.getLocalPlayer() != null) {
-                log.debug("Sending in-game completion notification");
-                client.addChatMessage(ChatMessageType.BROADCAST, "", formattedMessage, "");
-
-                executor.execute(() -> {
-                    BufferedImage screenshot = null;
-                    if (config.sendScreenshot()) {
-                        log.debug("Capturing screenshot for completion notification");
-                        screenshot = captureScreenshot();
-                        if (screenshot == null) {
-                            log.warn("Failed to capture screenshot for completion, sending text-only notification");
-                        }
-                    } else {
-                        log.debug("Screenshots disabled, not capturing for completion");
-                    }
-
-                    String discordMessage = client.getLocalPlayer().getName() + " - " + message;
-                    
-                    log.debug("Sending Discord completion notification: {}", discordMessage);
-                    sendCompletionDiscordNotification(discordMessage, screenshot);
-                });
-            } else {
-                log.debug("Player is null, not sending completion notification");
-            }
-        });
-    }
-
-    private static String getMessageType(String message) {
-        String formattedMessage;
-
-        if (message.contains("ROW")) {
-            formattedMessage = "<col=00ffff>BINGO! </col> <col=ffffff>You've completed</col> <col=ffff00>ROW " +
-                message.substring(message.indexOf("ROW") + 4, message.indexOf("COMPLETE") - 1) +
-                "</col> <col=ffffff>!</col>";
-        } else if (message.contains("COLUMN")) {
-            formattedMessage = "<col=00ffff>BINGO! </col> <col=ffffff>You've completed</col> <col=ffff00>COLUMN " +
-                message.substring(message.indexOf("COLUMN") + 7, message.indexOf("COMPLETE") - 1) +
-                "</col> <col=ffffff>!</col>";
-        } else if (message.contains("DIAGONAL")) {
-            formattedMessage = "<col=00ffff>BINGO! </col> <col=ffffff>You've completed a</col> <col=ffff00>DIAGONAL LINE" + "</col> <col=ffffff>!</col>";
-        } else if (message.contains("FULL BOARD")) {
-            formattedMessage = "<col=ff00ff>CONGRATULATIONS! </col> <col=ffffff>You've completed the</col> <col=ffff00>ENTIRE BOARD</col> <col=ffffff>!</col>";
-        } else {
-            formattedMessage = "<col=00ffff>BINGO!</col> " + message;
+        if (!config.completionNotifications()) {
+            return;
         }
-        return formattedMessage;
+
+        String gameMessage = String.format("<col=00ff00>BINGO COMPLETION!</col> <col=ffffff>%s</col>", message);
+
+        if (client.getGameState() == GameState.LOGGED_IN) {
+            client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", gameMessage, null);
+        }
+
+        if (config.discordWebhookUrl() != null && !config.discordWebhookUrl().isEmpty()) {
+            String discordMessage = String.format("%s completed: %s", 
+                    client.getLocalPlayer() != null ? client.getLocalPlayer().getName() : "Player", 
+                    message);
+
+            executor.execute(() -> captureScreenshotAsync(screenshot -> {
+
+                sendDiscordNotification(discordMessage, screenshot, true);
+            }));
+        }
     }
 
     /**
      * Represents a Discord notification with optional screenshot
      */
     private static class DiscordNotification {
+        @Getter
         private final String message;
+        @Getter
         private final BufferedImage screenshot;
         private final boolean isCompletion;
         
@@ -873,15 +715,7 @@ public class BingoPlugin extends Plugin {
             this.screenshot = screenshot;
             this.isCompletion = isCompletion;
         }
-        
-        public String getMessage() {
-            return message;
-        }
-        
-        public BufferedImage getScreenshot() {
-            return screenshot;
-        }
-        
+
         public boolean hasScreenshot() {
             return screenshot != null;
         }
@@ -892,7 +726,7 @@ public class BingoPlugin extends Plugin {
     }
     
     /**
-     * Sends a Discord notification for an item or completion
+     * Sends a Discord notification with optional screenshot
      * 
      * @param message The notification message
      * @param screenshot The screenshot to include, or null for text-only
@@ -905,26 +739,20 @@ public class BingoPlugin extends Plugin {
         }
 
         String webhookUrl = config.discordWebhookUrl();
-        if (webhookUrl == null || webhookUrl.trim().isEmpty()) {
-            log.warn("Discord webhook URL is not configured");
+        if (isValidWebhookUrl(webhookUrl)) {
             return;
         }
-        
-        // Basic validation of webhook URL format
-        if (!webhookUrl.startsWith("https://discord.com/api/webhooks/") && 
-            !webhookUrl.startsWith("https://discordapp.com/api/webhooks/")) {
-            log.warn("Invalid Discord webhook URL format: {}", webhookUrl);
-            return;
+
+        boolean shouldSendScreenshot = config.sendScreenshot() && screenshot != null;
+
+        byte[] imageBytes = null;
+        if (shouldSendScreenshot) {
+            imageBytes = imageToByteArray(screenshot);
+            shouldSendScreenshot = imageBytes != null;
         }
         
-        // Validate screenshot before attempting to use it
-        boolean shouldSendScreenshot = config.sendScreenshot() && 
-                                      screenshot != null && 
-                                      screenshot.getWidth() > 0 && 
-                                      screenshot.getHeight() > 0;
-        
-        if (config.sendScreenshot() && screenshot == null) {
-            log.warn("Screenshot capture failed, sending notification without screenshot");
+        if (config.sendScreenshot() && (screenshot == null || imageBytes == null)) {
+            log.warn("Screenshot capture or conversion failed, sending notification without screenshot");
         }
         
         log.debug("Sending Discord notification: {} (with screenshot: {}, completion: {})", 
@@ -935,27 +763,7 @@ public class BingoPlugin extends Plugin {
         
         executor.execute(() -> sendDiscordNotificationAsync(notification, webhookUrl.trim()));
     }
-    
-    /**
-     * Sends a Discord notification for an item
-     * 
-     * @param message The notification message
-     * @param screenshot The screenshot to include, or null for text-only
-     */
-    private void sendDiscordNotification(String message, BufferedImage screenshot) {
-        sendDiscordNotification(message, screenshot, false);
-    }
-    
-    /**
-     * Sends a Discord notification for a completion
-     * 
-     * @param message The completion message
-     * @param screenshot The screenshot to include, or null for text-only
-     */
-    private void sendCompletionDiscordNotification(String message, BufferedImage screenshot) {
-        sendDiscordNotification(message, screenshot, true);
-    }
-    
+
     /**
      * Asynchronously sends a Discord notification
      * 
@@ -963,8 +771,7 @@ public class BingoPlugin extends Plugin {
      * @param webhookUrl The Discord webhook URL
      */
     private void sendDiscordNotificationAsync(DiscordNotification notification, String webhookUrl) {
-        if (webhookUrl == null || webhookUrl.isEmpty()) {
-            log.warn("Cannot send Discord notification: webhook URL is null or empty");
+        if (isValidWebhookUrl(webhookUrl)) {
             return;
         }
         
@@ -979,7 +786,6 @@ public class BingoPlugin extends Plugin {
             sendDiscordMessageWithScreenshot(notification, webhookUrl);
         } catch (Exception e) {
             log.warn("Error sending Discord notification", e);
-            // Try to send text-only as fallback if we were trying to send with screenshot
             if (notification.hasScreenshot()) {
                 try {
                     log.debug("Attempting to send text-only notification as fallback");
@@ -1000,23 +806,12 @@ public class BingoPlugin extends Plugin {
      * @param webhookUrl The Discord webhook URL
      */
     private void sendTextOnlyDiscordMessage(DiscordNotification notification, String webhookUrl) throws IOException {
-        if (webhookUrl == null || webhookUrl.isEmpty()) {
-            log.warn("Cannot send Discord message: webhook URL is null or empty");
+        if (isValidWebhookUrl(webhookUrl)) {
             return;
         }
         
         try {
-            // Create the simplest possible JSON payload
-            JsonObject json = new JsonObject();
-            
-            // Set the content based on notification type
-            if (notification.isCompletion()) {
-                json.addProperty("content", "🎉 **" + notification.getMessage() + "** 🎉");
-            } else {
-                json.addProperty("content", notification.getMessage());
-            }
-            
-            // Send the request
+            JsonObject json = createDiscordPayload(notification);
             RequestBody body = RequestBody.create(JSON, json.toString());
             Request request = new Request.Builder()
                     .url(webhookUrl)
@@ -1025,15 +820,7 @@ public class BingoPlugin extends Plugin {
     
             try (Response response = okHttpClient.newCall(request).execute()) {
                 if (!response.isSuccessful()) {
-                    String responseBody = "";
-                    try {
-                        if (response.body() != null) {
-                            responseBody = response.body().string();
-                        }
-                    } catch (Exception e) {
-                        // Ignore error reading response body
-                    }
-                    
+                    String responseBody = extractResponseBody(response);
                     log.warn("Error sending text-only Discord message: {} ({}), response: {}", 
                             response.code(), response.message(), responseBody);
                 } else {
@@ -1047,6 +834,49 @@ public class BingoPlugin extends Plugin {
     }
     
     /**
+     * Converts a BufferedImage to a byte array in PNG format
+     * 
+     * @param screenshot The screenshot to convert
+     * @return The byte array or null if conversion failed
+     */
+    private byte[] imageToByteArray(BufferedImage screenshot) {
+        if (screenshot == null) {
+            return null;
+        }
+
+        if (screenshot.getWidth() <= 0 || screenshot.getHeight() <= 0) {
+            log.warn("Invalid screenshot dimensions: {}x{}", 
+                    screenshot.getWidth(), screenshot.getHeight());
+            return null;
+        }
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        try {
+            boolean success = ImageIO.write(screenshot, "png", baos);
+            if (!success) {
+                log.warn("Failed to write screenshot to PNG format");
+                return null;
+            }
+            
+            byte[] imageBytes = baos.toByteArray();
+            if (imageBytes.length == 0) {
+                log.warn("Screenshot converted to empty byte array");
+                return null;
+            }
+
+            if (imageBytes.length > 8 * 1024 * 1024) {
+                log.warn("Screenshot is too large for Discord ({} bytes)", imageBytes.length);
+                return null;
+            }
+            
+            return imageBytes;
+        } catch (Exception e) {
+            log.warn("Error writing screenshot to PNG format", e);
+            return null;
+        }
+    }
+    
+    /**
      * Sends a Discord message with a screenshot
      * 
      * @param notification The notification to send
@@ -1054,80 +884,27 @@ public class BingoPlugin extends Plugin {
      */
     private void sendDiscordMessageWithScreenshot(DiscordNotification notification, String webhookUrl) throws IOException {
         try {
-            // Validate webhook URL
-            if (webhookUrl == null || webhookUrl.trim().isEmpty()) {
-                log.warn("Cannot send Discord message: webhook URL is null or empty");
+            if (isValidWebhookUrl(webhookUrl)) {
                 return;
             }
-            
-            // Validate screenshot before processing
-            BufferedImage screenshot = notification.getScreenshot();
-            if (screenshot == null) {
-                log.warn("Cannot send Discord message with null screenshot, falling back to text-only");
-                sendTextOnlyDiscordMessage(notification, webhookUrl);
-                return;
-            }
-            
-            // Validate image dimensions
-            if (screenshot.getWidth() <= 0 || screenshot.getHeight() <= 0) {
-                log.warn("Invalid screenshot dimensions: {}x{}, falling back to text-only", 
-                        screenshot.getWidth(), screenshot.getHeight());
-                sendTextOnlyDiscordMessage(notification, webhookUrl);
-                return;
-            }
-            
-            // Convert screenshot to bytes
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            try {
-                boolean success = ImageIO.write(screenshot, "png", baos);
-                if (!success) {
-                    log.warn("Failed to write screenshot to PNG format, falling back to text-only");
-                    sendTextOnlyDiscordMessage(notification, webhookUrl);
-                    return;
-                }
-            } catch (Exception e) {
-                log.warn("Error writing screenshot to PNG format", e);
-                sendTextOnlyDiscordMessage(notification, webhookUrl);
-                return;
-            }
-            
-            byte[] imageBytes = baos.toByteArray();
-            if (imageBytes.length == 0) {
-                log.warn("Screenshot converted to empty byte array, falling back to text-only");
-                sendTextOnlyDiscordMessage(notification, webhookUrl);
-                return;
-            }
-            
-            // Check if image is too large (Discord limit is 8MB)
-            if (imageBytes.length > 8 * 1024 * 1024) {
-                log.warn("Screenshot is too large for Discord ({} bytes), falling back to text-only", 
-                        imageBytes.length);
+
+            byte[] imageBytes = imageToByteArray(notification.getScreenshot());
+            if (imageBytes == null) {
+                log.warn("Cannot send Discord message with screenshot, falling back to text-only");
                 sendTextOnlyDiscordMessage(notification, webhookUrl);
                 return;
             }
 
-            // Create a simpler JSON payload without attachment references
-            JsonObject json = new JsonObject();
-            
-            // Set the content based on notification type
-            if (notification.isCompletion()) {
-                json.addProperty("content", "🎉 **" + notification.getMessage() + "** 🎉");
-            } else {
-                json.addProperty("content", notification.getMessage());
-            }
-            
-            // Build the multipart request with the file
+            JsonObject json = createDiscordPayload(notification);
+
             MultipartBody.Builder requestBuilder = new MultipartBody.Builder()
                     .setType(MultipartBody.FORM);
-            
-            // Add the JSON payload
+
             requestBuilder.addFormDataPart("payload_json", json.toString());
-            
-            // Add the file with a simple name
+
             requestBuilder.addFormDataPart("file", "screenshot.png", 
                     RequestBody.create(MEDIA_TYPE_PNG, imageBytes));
-            
-            // Build and execute the request
+
             Request request = new Request.Builder()
                     .url(webhookUrl)
                     .post(requestBuilder.build())
@@ -1135,19 +912,10 @@ public class BingoPlugin extends Plugin {
             
             try (Response response = okHttpClient.newCall(request).execute()) {
                 if (!response.isSuccessful()) {
-                    String responseBody = "";
-                    try {
-                        if (response.body() != null) {
-                            responseBody = response.body().string();
-                        }
-                    } catch (Exception e) {
-                        // Ignore error reading response body
-                    }
-                    
+                    String responseBody = extractResponseBody(response);
                     log.warn("Error sending Discord message with screenshot: {} ({}), response: {}", 
                             response.code(), response.message(), responseBody);
-                    
-                    // If we get any error, try sending without screenshot
+
                     log.info("Discord rejected the screenshot, falling back to text-only");
                     sendTextOnlyDiscordMessage(notification, webhookUrl);
                 } else {
@@ -1156,7 +924,6 @@ public class BingoPlugin extends Plugin {
             }
         } catch (Exception e) {
             log.warn("Error sending Discord message with screenshot", e);
-            // Try to send text-only as fallback
             try {
                 sendTextOnlyDiscordMessage(notification, webhookUrl);
             } catch (Exception fallbackException) {
@@ -1170,6 +937,7 @@ public class BingoPlugin extends Plugin {
      */
     private void loadItems() {
         items.clear();
+        itemsByName.clear();
 
         if (config.itemSourceType() == BingoConfig.ItemSourceType.MANUAL) {
             if (!config.remoteUrl().isEmpty()) {
@@ -1226,9 +994,13 @@ public class BingoPlugin extends Plugin {
                                 List<ItemPrice> searchResults = itemManager.search(properName);
                                 if (!searchResults.isEmpty()) {
                                     ItemPrice match = searchResults.get(0);
-                                    items.add(new BingoItem(match.getName(), match.getId()));
+                                    BingoItem item = new BingoItem(match.getName(), match.getId());
+                                    items.add(item);
+                                    itemsByName.put(item.getName().toLowerCase(), item);
                                 } else {
-                                    items.add(new BingoItem(properName));
+                                    BingoItem item = new BingoItem(properName);
+                                    items.add(item);
+                                    itemsByName.put(item.getName().toLowerCase(), item);
                                 }
                             }));
         }
@@ -1250,10 +1022,13 @@ public class BingoPlugin extends Plugin {
         Arrays.stream(savedItems.split(","))
                 .map(String::trim)
                 .filter(s -> !s.isEmpty())
-                .forEach(name -> items.stream()
-                        .filter(item -> item.getName().equals(name))
-                        .findFirst()
-                        .ifPresent(item -> item.setObtained(true)));
+                .forEach(name -> {
+                    // Use the map for faster lookups
+                    BingoItem item = itemsByName.get(name.toLowerCase());
+                    if (item != null) {
+                        item.setObtained(true);
+                    }
+                });
 
         SwingUtilities.invokeLater(() -> panel.updateItems(items));
     }
@@ -1373,36 +1148,34 @@ public class BingoPlugin extends Plugin {
      * @param remoteItems List of item names to update from
      */
     private void updateItemsFromList(List<String> remoteItems) {
-        Map<String, Boolean> obtainedStatus = items.stream()
-                .collect(Collectors.toMap(
-                        BingoItem::getName,
-                        BingoItem::isObtained,
-                        (a, b) -> a
-                ));
-
         items.clear();
-        remoteItems.forEach(name -> {
-            String properName = name.replace("_", " ");
-            BingoItem item;
+        itemsByName.clear();
+
+        for (String itemName : remoteItems) {
+            String properName = itemName.trim().replace("_", " ");
+            if (properName.isEmpty()) {
+                continue;
+            }
 
             List<ItemPrice> searchResults = itemManager.search(properName);
+            BingoItem bingoItem;
+            
             if (!searchResults.isEmpty()) {
                 ItemPrice match = searchResults.get(0);
-                item = new BingoItem(match.getName(), match.getId());
+                bingoItem = new BingoItem(match.getName(), match.getId());
             } else {
-                item = new BingoItem(properName);
+                bingoItem = new BingoItem(properName);
             }
+            
+            items.add(bingoItem);
+            itemsByName.put(bingoItem.getName().toLowerCase(), bingoItem);
+        }
 
-            if (obtainedStatus.containsKey(item.getName())) {
-                item.setObtained(obtainedStatus.get(item.getName()));
-            }
-
-            items.add(item);
-        });
+        loadSavedItems();
 
         SwingUtilities.invokeLater(() -> panel.updateItems(items));
 
-        final int itemCount = remoteItems.size();
+        final int itemCount = items.size();
         clientThread.invoke(() -> {
             if (client.getLocalPlayer() != null) {
                 client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
@@ -1410,107 +1183,64 @@ public class BingoPlugin extends Plugin {
             }
         });
 
-        log.debug("Successfully loaded {} items from remote URL", remoteItems.size());
+        log.debug("Successfully loaded {} items from remote URL", items.size());
     }
 
     /**
-     * Creates a Discord payload JSON with embedded image using a specific filename
-     *
-     * @param message The message to send
-     * @param filename The filename to use in the attachment URL
-     * @return The JSON object for the payload
+     * Creates a Discord message payload based on the notification type
+     * 
+     * @param notification The notification to create a payload for
+     * @return The JSON payload
      */
-    private JsonObject createDiscordPayloadWithFilename(String message, String filename) {
+    private JsonObject createDiscordPayload(DiscordNotification notification) {
         JsonObject json = new JsonObject();
-        json.addProperty("content", message);
 
-        // Create attachment object first
-        com.google.gson.JsonArray attachmentsArray = new com.google.gson.JsonArray();
-        JsonObject attachmentObj = new JsonObject();
-        attachmentObj.addProperty("id", 0);
-        attachmentObj.addProperty("filename", filename);
-        attachmentObj.addProperty("description", "Screenshot file");
-        attachmentsArray.add(attachmentObj);
-        json.add("attachments", attachmentsArray);
-
-        // Create embed that references the attachment
-        JsonObject embedObj = new JsonObject();
-        JsonObject imageObj = new JsonObject();
-        imageObj.addProperty("url", "attachment://" + filename);
-        embedObj.add("image", imageObj);
-
-        com.google.gson.JsonArray embedsArray = new com.google.gson.JsonArray();
-        embedsArray.add(embedObj);
-        json.add("embeds", embedsArray);
-
-        return json;
-    }
-
-    /**
-     * Creates a Discord payload JSON with embedded image for completion notifications using a specific filename
-     *
-     * @param message The completion message
-     * @param filename The filename to use in the attachment URL
-     * @return The JSON object for the payload
-     */
-    private JsonObject createCompletionDiscordPayloadWithFilename(String message, String filename) {
-        JsonObject json = new JsonObject();
-        json.addProperty("content", "🎉 **" + message + "** 🎉");
-
-        // Create attachment object first
-        com.google.gson.JsonArray attachmentsArray = new com.google.gson.JsonArray();
-        JsonObject attachmentObj = new JsonObject();
-        attachmentObj.addProperty("id", 0);
-        attachmentObj.addProperty("filename", filename);
-        attachmentObj.addProperty("description", "Bingo completion screenshot");
-        attachmentsArray.add(attachmentObj);
-        json.add("attachments", attachmentsArray);
-
-        // Create embed with completion info
-        JsonObject embedObj = new JsonObject();
-        embedObj.addProperty("title", "BINGO COMPLETION!");
-        embedObj.addProperty("description", message);
-        embedObj.addProperty("color", 16776960); // Gold color for celebration
-
-        // Add image that references the attachment
-        JsonObject imageObj = new JsonObject();
-        imageObj.addProperty("url", "attachment://" + filename);
-        embedObj.add("image", imageObj);
-
-        com.google.gson.JsonArray embedsArray = new com.google.gson.JsonArray();
-        embedsArray.add(embedObj);
-        json.add("embeds", embedsArray);
-
-        return json;
-    }
-
-    /**
-     * Creates a Discord payload JSON for text-only messages without any attachment references
-     *
-     * @param message The message to send
-     * @param isCompletion Whether this is a completion notification
-     * @return The JSON object for the payload
-     */
-    private JsonObject createTextOnlyDiscordPayload(String message, boolean isCompletion) {
-        JsonObject json = new JsonObject();
-        
-        if (isCompletion) {
-            json.addProperty("content", "🎉 **" + message + "** 🎉");
-            
-            JsonObject embedObj = new JsonObject();
-            embedObj.addProperty("title", "BINGO COMPLETION!");
-            embedObj.addProperty("description", message);
-            embedObj.addProperty("color", 16776960); // Gold color for celebration
-            
-            com.google.gson.JsonArray embedsArray = new com.google.gson.JsonArray();
-            embedsArray.add(embedObj);
-            json.add("embeds", embedsArray);
+        if (notification.isCompletion()) {
+            json.addProperty("content", "🎉 **" + notification.getMessage() + "** 🎉");
         } else {
-            // Simple text message for regular notifications
-            json.addProperty("content", message);
+            json.addProperty("content", notification.getMessage());
         }
         
         return json;
+    }
+    
+    /**
+     * Validates a webhook URL
+     * 
+     * @param webhookUrl The webhook URL to validate
+     * @return True if valid, false otherwise
+     */
+    private boolean isValidWebhookUrl(String webhookUrl) {
+        if (webhookUrl == null || webhookUrl.trim().isEmpty()) {
+            log.warn("Discord webhook URL is null or empty");
+            return true;
+        }
+
+        if (!webhookUrl.startsWith("https://discord.com/api/webhooks/") && 
+            !webhookUrl.startsWith("https://discordapp.com/api/webhooks/")) {
+            log.warn("Invalid Discord webhook URL format: {}", webhookUrl);
+            return true;
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Extracts and logs the response body from a Discord API response
+     * 
+     * @param response The response to extract the body from
+     * @return The response body or an empty string if not available
+     */
+    private String extractResponseBody(Response response) {
+        if (response == null || response.body() == null) {
+            return "";
+        }
+        
+        try {
+            return response.body().string();
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     /**
@@ -1550,29 +1280,5 @@ public class BingoPlugin extends Plugin {
      */
     public void updateRemoteItemsManually() {
         updateRemoteItems();
-    }
-
-    /**
-     * Creates a Discord payload JSON with embedded image
-     *
-     * @param message The message content
-     * @return The JSON object for the payload
-     */
-    private JsonObject createDiscordPayloadWithEmbed(String message) {
-        // Generate a unique filename
-        String filename = "screenshot_" + System.currentTimeMillis() + ".png";
-        return createDiscordPayloadWithFilename(message, filename);
-    }
-
-    /**
-     * Creates a Discord payload JSON with embedded image for completion notifications
-     *
-     * @param message The completion message
-     * @return The JSON object for the payload
-     */
-    private JsonObject createCompletionDiscordPayloadWithEmbed(String message) {
-        // Generate a unique filename
-        String filename = "screenshot_" + System.currentTimeMillis() + ".png";
-        return createCompletionDiscordPayloadWithFilename(message, filename);
     }
 }
