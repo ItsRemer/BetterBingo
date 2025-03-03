@@ -2,6 +2,8 @@
 
 A customizable Bingo plugin for RuneLite that allows players to track items for bingo events and competitions.
 
+![Alt text](https://i.imgur.com/K9gEzpm.png) ![Alt text](https://i.imgur.com/sREZ2Ba.png)
+
 ## Features
 
 - **Dual Input Methods**: Choose between manually entering items or loading them from a remote URL (such as Pastebin)
