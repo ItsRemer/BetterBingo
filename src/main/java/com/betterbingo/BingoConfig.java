@@ -3,9 +3,6 @@ package com.betterbingo;
 import net.runelite.client.config.Config;
 import net.runelite.client.config.ConfigGroup;
 import net.runelite.client.config.ConfigItem;
-import net.runelite.client.config.ConfigSection;
-import lombok.AllArgsConstructor;
-import lombok.Getter;
 
 @ConfigGroup("bingo")
 public interface BingoConfig extends Config
@@ -33,7 +30,8 @@ public interface BingoConfig extends Config
             keyName = "itemSourceType",
             name = "Item Source",
             description = "Choose how to provide bingo items",
-            position = 0
+            position = 0,
+            hidden = true
     )
     default ItemSourceType itemSourceType()
     {
@@ -44,7 +42,8 @@ public interface BingoConfig extends Config
             keyName = "itemList",
             name = "Bingo Items",
             description = "List of items for bingo (one per line)",
-            position = 1
+            position = 1,
+            hidden = true
     )
     default String itemList()
     {
@@ -55,7 +54,8 @@ public interface BingoConfig extends Config
             keyName = "remoteUrl",
             name = "Remote URL",
             description = "URL to fetch bingo items from (supports Pastebin links)",
-            position = 2
+            position = 2,
+            hidden = true
     )
     default String remoteUrl()
     {
@@ -66,7 +66,8 @@ public interface BingoConfig extends Config
             keyName = "refreshInterval",
             name = "Refresh Interval",
             description = "How often to refresh remote items (in minutes)",
-            position = 3
+            position = 3,
+            hidden = true
     )
     default int refreshInterval()
     {
@@ -76,12 +77,13 @@ public interface BingoConfig extends Config
     @ConfigItem(
             keyName = "persistObtained",
             name = "Save Progress",
-            description = "Save obtained items between sessions",
-            position = 4
+            description = "When disabled, obtained items will be saved between sessions. When enabled, obtained items will NOT be saved between sessions.",
+            position = 4,
+            hidden = true
     )
     default boolean persistObtained()
     {
-        return true;
+        return false;
     }
 
     @ConfigItem(
@@ -116,4 +118,43 @@ public interface BingoConfig extends Config
     {
         return true;
     }
+
+    @ConfigItem(
+            keyName = "currentProfile",
+            name = "Current Profile",
+            description = "The currently active bingo profile",
+            position = 8,
+            hidden = true
+    )
+    default String currentProfile()
+    {
+        return "default";
+    }
+
+    @ConfigItem(
+            keyName = "currentProfile",
+            name = "Current Profile",
+            description = "The currently active bingo profile",
+            hidden = true
+    )
+    void setCurrentProfile(String currentProfile);
+
+    @ConfigItem(
+            keyName = "profiles",
+            name = "Bingo Profiles",
+            description = "List of available bingo profiles",
+            hidden = true
+    )
+    default String profiles()
+    {
+        return "default";
+    }
+
+    @ConfigItem(
+            keyName = "profiles",
+            name = "Bingo Profiles",
+            description = "List of available bingo profiles",
+            hidden = true
+    )
+    void setProfiles(String profiles);
 } 
