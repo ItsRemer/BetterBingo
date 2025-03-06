@@ -6,14 +6,72 @@ A customizable Bingo plugin for RuneLite that allows players to track items for 
 
 ## Features
 
-- **Dual Input Methods**: Choose between manually entering items or loading them from a remote URL (such as Pastebin)
-- **Item Recognition**: Automatically detects when you obtain items on your bingo list
-- **Visual Grid Display**: Shows your bingo items in a 5x5 grid with visual indicators for obtained items
-- **Discord Integration**: Sends notifications with screenshots to a Discord channel when items are obtained
-- **Progress Saving**: Optionally saves your progress between sessions
-- **Remote Updates**: Automatically refreshes items from remote sources at configurable intervals
+- **Bingo Board**: Track up to 25 items in a 5x5 grid
+- **Item Source Options**: Load items manually or from a remote URL (Pastebin)
+- **Progress Tracking**: Save obtained items between sessions
+- **Discord Integration**: Send notifications and screenshots to Discord
+- **Completion Notifications**: Special notifications for completing rows, columns, or the entire board
+- **Anti-Cheat System**: Robust verification of item acquisitions
+- **Profile System**: Create and manage multiple bingo profiles for different events
 
-## Setup Guide
+## Profile System
+
+The plugin includes a comprehensive profile management system that allows players to participate in multiple bingo events simultaneously:
+
+### Key Features
+
+- **Multiple Profiles**: Create named profiles for different bingo events or challenges
+- **Easy Switching**: Quickly switch between profiles from the main panel
+- **Independent Settings**: Each profile maintains its own:
+  - Item list
+  - Obtained items
+  - Remote URL configuration
+  - Refresh interval
+  - Persistence settings
+- **Profile Management**: Create new profiles, delete existing ones, and customize settings per profile
+- **Reset Option**: Reset a profile's progress without affecting other profiles
+
+### Using Profiles
+
+1. **Create a Profile**: Click the "New" button next to the profile dropdown
+2. **Switch Profiles**: Select a different profile from the dropdown menu
+3. **Profile Settings**: Click "Settings" to configure profile-specific options
+4. **Delete a Profile**: Select a profile and click "Delete" (requires confirmation)
+
+## Anti-Cheat System
+
+The plugin includes a comprehensive anti-cheat system to ensure fair play in bingo events:
+
+### Key Features
+
+- **Always Active**: Item verification is always enabled and cannot be disabled
+- **Acquisition Tracking**: Records detailed information about how items are obtained
+- **Verification Checks**: Validates item acquisitions based on timing, location, and source
+- **Discord Verification**: Sends acquisition logs to Discord for event organizers to verify
+- **Screenshot Capture**: Takes screenshots when items are obtained for verification
+
+## Configuration Options
+
+- **Item Source**: Choose between manual input or remote URL
+- **Bingo Items**: List of items to track (when using manual input)
+- **Remote URL**: URL to fetch bingo items from (supports Pastebin)
+- **Refresh Interval**: How often to refresh remote items
+- **Save Progress**: Save obtained items between sessions
+- **Send Screenshots**: Send screenshots to Discord when obtaining items
+- **Discord Webhook URL**: Discord integration for notifications
+- **Completion Notifications**: Special notifications for completing rows, columns, or the board
+- **Verification Timeout**: Maximum time between item acquisition and marking
+- **Current Profile**: Select which profile to use
+- **Profiles**: Create, delete, and manage multiple bingo profiles
+
+## How It Works
+
+1. The plugin loads the bingo items from the configured source
+2. When an item is obtained in-game, the plugin records the acquisition details
+3. The anti-cheat system validates the acquisition based on configured rules
+4. If valid, the item is marked as obtained on the bingo board
+5. Notifications are sent to the player and Discord (if configured)
+6. The acquisition log is sent to Discord for verification
 
 ### Basic Setup
 
@@ -57,6 +115,16 @@ To receive notifications when items are obtained:
 ### Viewing Your Bingo Board
 
 The bingo board displays up to 25 items in a 5x5 grid. Items you've obtained will be marked with a checkmark and displayed in green.
+
+### Managing Profiles
+
+The profile panel at the top of the bingo board allows you to:
+- Select a profile from the dropdown menu
+- Create a new profile with the "New" button
+- Delete the selected profile with the "Delete" button
+- Configure profile-specific settings with the "Settings" button
+
+Each profile maintains its own item list, obtained items, and configuration settings.
 
 ### Obtaining Items
 
@@ -106,6 +174,14 @@ To share a bingo board with others:
 3. Share the URL with other players
 4. Each player can enter the URL in their Remote URL field
 
+### Using Multiple Profiles
+
+For players participating in multiple bingo events:
+1. Create a separate profile for each event
+2. Configure each profile with the appropriate item source
+3. Switch between profiles as needed without losing progress
+4. Use profile-specific settings to customize each bingo board
+
 ### Organizing Competitions
 
 For clan events or competitions:
@@ -121,7 +197,7 @@ For clan events or competitions:
 
 ## Support
 
-If you encounter issues or have suggestions for improvements, please report them on the plugin's GitHub repository or contact the developer.
+If you encounter issues or have suggestions for improvements, please report them on the plugin's GitHub repository or contact the developer on Discord "itsremiq"
 
 ---
 
