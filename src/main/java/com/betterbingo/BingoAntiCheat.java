@@ -28,6 +28,9 @@ import java.util.Set;
 @Singleton
 public class BingoAntiCheat
 {
+    private static final String CONFIG_GROUP = "bingo";
+    private static final String CONFIG_KEY_ACQUISITION_LOG = "acquisitionLog";
+    
     private final Client client;
     private final BingoConfig config;
     private final ItemManager itemManager;
@@ -37,6 +40,9 @@ public class BingoAntiCheat
     
     @Inject
     private Gson gson;
+    
+    @Inject
+    private BingoProfileManager profileManager;
 
     // Thread-safe log of how items were acquired
     private final Map<String, ItemAcquisitionRecord> acquisitionRecords = new ConcurrentHashMap<>();
@@ -98,48 +104,65 @@ public class BingoAntiCheat
     {
         if (itemName == null || itemName.isEmpty())
         {
-            log.debug("Attempted to record an acquisition with null or empty item name");
             return;
         }
 
-        String details = String.format(
-                "%s | World: %d (%s) | Player: %s",
+        // Normalize item name
+        itemName = itemName.trim().toLowerCase();
+
+        // Create enhanced source details
+        String enhancedSourceDetails = String.format(
+                "%s (Player: %s, World: %d, Type: %s)",
                 sourceDetails,
+                getCurrentPlayerName(),
                 getCurrentWorldNumber(),
-                getCurrentWorldType(),
-                getCurrentPlayerName()
+                getCurrentWorldType()
         );
 
-        ItemAcquisitionRecord record = new ItemAcquisitionRecord(itemName, method, details, location);
-        acquisitionRecords.put(itemName.toLowerCase(), record);
-
-        log.info("Item acquisition recorded: {} via {} from {} at {}",
-                itemName, method, details, location
+        // Record the acquisition
+        ItemAcquisitionRecord record = new ItemAcquisitionRecord(
+                itemName,
+                method,
+                enhancedSourceDetails,
+                location
         );
+
+        acquisitionRecords.put(itemName, record);
+        log.debug("Recorded acquisition of {} via {}: {}", itemName, method, enhancedSourceDetails);
     }
 
     /**
-     * Validates an item's acquisition. Returns false if no record exists,
-     * or if it fails any anti-cheat checks (timing, location, etc.).
+     * Validates that an item acquisition is legitimate based on recorded data
      */
     public boolean validateItemAcquisition(String itemName)
     {
         if (itemName == null || itemName.isEmpty())
         {
-            log.warn("Cannot validate acquisition for a null or empty item name");
             return false;
         }
 
-        ItemAcquisitionRecord record = acquisitionRecords.get(itemName.toLowerCase());
+        // Normalize item name
+        itemName = itemName.trim().toLowerCase();
+
+        // Check if we have a record for this item
+        ItemAcquisitionRecord record = acquisitionRecords.get(itemName);
         if (record == null)
         {
-            log.warn("No acquisition record found for item: {}", itemName);
+            log.debug("No acquisition record found for item: {}", itemName);
             return false;
         }
 
-        if (!isValidLocationForItem(record.getItemName(), record.getPlayerLocation()))
+        // Check if the acquisition method is valid
+        if (record.getMethod() == AcquisitionMethod.UNKNOWN)
         {
-            log.warn("Rejected {} - invalid location {}", itemName, record.getPlayerLocation());
+            log.debug("Unknown acquisition method for item: {}", itemName);
+            return false;
+        }
+
+        // Check if the location is valid for this item
+        if (!isValidLocationForItem(itemName, record.getPlayerLocation()))
+        {
+            log.debug("Invalid location for item: {}", itemName);
             return false;
         }
 
@@ -147,96 +170,105 @@ public class BingoAntiCheat
     }
 
     /**
-     * Checks if the given location is valid for obtaining the specified item.
-     * In a full implementation, this might check a data structure or config.
-     * Doubt this will be used ever in the future but w.e
+     * Checks if the location is valid for the given item
+     * This is a placeholder for more sophisticated validation
      */
     private boolean isValidLocationForItem(String itemName, String location)
     {
-        // Placeholder: assume all locations are valid for now, might never be used though
+        // For now, we'll just return true
+        // In the future, this could check against a database of valid locations for each item
         return true;
     }
 
     /**
-     * Builds a formatted message containing the acquisition log filtered to only include bingo items.
-     * 
-     * @param bingoItems Set of item names that are on the bingo board
-     * @return Formatted message with acquisition details for bingo items only
-     * Makes sure that we are not adding any acquisition items that are needed
+     * Builds a message containing acquisition details for all bingo items
      */
     public String buildBingoItemsAcquisitionLogMessage(Set<String> bingoItems)
     {
-        if (acquisitionRecords.isEmpty())
+        if (bingoItems == null || bingoItems.isEmpty())
         {
-            return "No item acquisitions recorded.";
+            return "No bingo items have been acquired yet.";
         }
 
-        StringBuilder sb = new StringBuilder("**Bingo Item Acquisition Log**\n\n");
-        
-        boolean hasRecords = false;
-        for (ItemAcquisitionRecord record : acquisitionRecords.values())
+        StringBuilder sb = new StringBuilder();
+        sb.append("**Acquisition Log:**\n");
+
+        int count = 0;
+        for (String itemName : bingoItems)
         {
-            if (bingoItems.contains(record.getItemName().toLowerCase()))
+            ItemAcquisitionRecord record = acquisitionRecords.get(itemName);
+            if (record != null)
             {
+                count++;
                 sb.append(String.format(
-                        "- **%s** via %s\n  %s\n  at %s (%s)\n\n",
+                        "%d. **%s** - %s via %s at %s\n",
+                        count,
                         record.getItemName(),
+                        record.getTimestamp(),
                         record.getMethod(),
-                        record.getSourceDetails(),
-                        record.getPlayerLocation(),
-                        record.getTimestamp()
+                        record.getPlayerLocation()
                 ));
-                hasRecords = true;
             }
         }
 
-        if (!hasRecords)
+        if (count == 0)
         {
-            return "No bingo item acquisitions recorded.";
+            sb.append("No acquisition records found for bingo items.");
         }
 
         return sb.toString();
     }
 
     /**
-     * Clears the acquisition log.
+     * Clears the acquisition log
      */
     public void clearAcquisitionLog()
     {
         acquisitionRecords.clear();
-        log.debug("Acquisition log cleared");
+        log.debug("Cleared acquisition log");
     }
 
     /**
-     * Saves the acquisition log to the configuration.
-     * 
-     * @param profileKey The profile-specific key to save under
+     * Saves the acquisition log for the current profile
+     */
+    public void saveAcquisitionLog()
+    {
+        String profileKey = config.currentProfile() + "." + CONFIG_KEY_ACQUISITION_LOG;
+        saveAcquisitionLog(profileKey);
+    }
+
+    /**
+     * Saves the acquisition log to the config
      */
     public void saveAcquisitionLog(String profileKey)
     {
         if (acquisitionRecords.isEmpty())
         {
+            log.debug("No acquisition records to save");
             return;
         }
-        
+
         try
         {
-            List<Map<String, String>> serializedRecords = new ArrayList<>();
+            // Convert the acquisition records to a serializable format
+            List<Map<String, Object>> serializableRecords = new ArrayList<>();
             for (ItemAcquisitionRecord record : acquisitionRecords.values())
             {
-                Map<String, String> serialized = new HashMap<>();
-                serialized.put("itemName", record.getItemName());
-                serialized.put("method", record.getMethod().toString());
-                serialized.put("timestamp", record.getTimestamp().toString());
-                serialized.put("sourceDetails", record.getSourceDetails());
-                serialized.put("playerLocation", record.getPlayerLocation());
-                serializedRecords.add(serialized);
+                Map<String, Object> recordMap = new HashMap<>();
+                recordMap.put("itemName", record.getItemName());
+                recordMap.put("method", record.getMethod().name());
+                recordMap.put("timestamp", record.getTimestamp().toString());
+                recordMap.put("sourceDetails", record.getSourceDetails());
+                recordMap.put("playerLocation", record.getPlayerLocation());
+                serializableRecords.add(recordMap);
             }
-            
-            String json = gson.toJson(serializedRecords);
-            configManager.setConfiguration("bingo", profileKey, json);
-            
-            log.debug("Saved acquisition log with {} records", serializedRecords.size());
+
+            // Serialize to JSON
+            String json = gson.toJson(serializableRecords);
+
+            // Save to config
+            configManager.setConfiguration(CONFIG_GROUP, profileKey, json);
+            log.debug("Saved {} acquisition records", acquisitionRecords.size());
         }
         catch (Exception e)
         {
@@ -245,38 +277,55 @@ public class BingoAntiCheat
     }
 
     /**
-     * Loads the acquisition log from the configuration.
-     * 
-     * @param profileKey The profile-specific key to load from
+     * Loads the acquisition log for the current profile
+     */
+    public void loadAcquisitionLog()
+    {
+        String profileKey = config.currentProfile() + "." + CONFIG_KEY_ACQUISITION_LOG;
+        loadAcquisitionLog(profileKey);
+    }
+
+    /**
+     * Loads the acquisition log from the config
      */
     public void loadAcquisitionLog(String profileKey)
     {
-        acquisitionRecords.clear();
-        
-        String json = configManager.getConfiguration("bingo", profileKey);
-        if (json == null || json.isEmpty())
-        {
-            return;
-        }
-        
         try
         {
-            Type type = new TypeToken<List<Map<String, String>>>(){}.getType();
-            List<Map<String, String>> serializedRecords = gson.fromJson(json, type);
-            
-            for (Map<String, String> serialized : serializedRecords)
+            // Clear existing records
+            acquisitionRecords.clear();
+
+            // Load from config
+            String json = configManager.getConfiguration(CONFIG_GROUP, profileKey);
+            if (json == null || json.isEmpty())
             {
-                String itemName = serialized.get("itemName");
-                AcquisitionMethod method = AcquisitionMethod.valueOf(serialized.get("method"));
-                String sourceDetails = serialized.get("sourceDetails");
-                String playerLocation = serialized.get("playerLocation");
-                
-                ItemAcquisitionRecord record = new ItemAcquisitionRecord(
-                    itemName, method, sourceDetails, playerLocation);
-                acquisitionRecords.put(itemName.toLowerCase(), record);
+                log.debug("No acquisition log found to load");
+                return;
             }
-            
-            log.debug("Loaded acquisition log with {} records", serializedRecords.size());
+
+            // Deserialize from JSON
+            Type listType = new TypeToken<List<Map<String, Object>>>(){}.getType();
+            List<Map<String, Object>> serializableRecords = gson.fromJson(json, listType);
+
+            // Convert back to acquisition records
+            for (Map<String, Object> recordMap : serializableRecords)
+            {
+                String itemName = (String) recordMap.get("itemName");
+                AcquisitionMethod method = AcquisitionMethod.valueOf((String) recordMap.get("method"));
+                String sourceDetails = (String) recordMap.get("sourceDetails");
+                String playerLocation = (String) recordMap.get("playerLocation");
+
+                ItemAcquisitionRecord record = new ItemAcquisitionRecord(
+                        itemName,
+                        method,
+                        sourceDetails,
+                        playerLocation
+                );
+
+                acquisitionRecords.put(itemName, record);
+            }
+
+            log.debug("Loaded {} acquisition records", acquisitionRecords.size());
         }
         catch (Exception e)
         {
@@ -285,7 +334,7 @@ public class BingoAntiCheat
     }
 
     /**
-     * Gets the player's current location name, e.g., a region label.
+     * Gets the player's current location name
      */
     public String getPlayerLocationName()
     {
@@ -295,27 +344,37 @@ public class BingoAntiCheat
         }
 
         LocalPoint localPoint = client.getLocalPlayer().getLocalLocation();
-        if (localPoint != null)
+        if (localPoint == null)
         {
-            WorldPoint worldPoint = WorldPoint.fromLocal(client, localPoint);
-            return "Region " + worldPoint.getRegionID();
+            return "Unknown";
         }
 
-        return "Region " + client.getLocalPlayer().getWorldLocation().getRegionID();
+        WorldPoint worldPoint = WorldPoint.fromLocal(client, localPoint);
+        int regionID = worldPoint.getRegionID();
+
+        // This is a placeholder - in a real implementation, you'd have a mapping of region IDs to location names
+        return "Region " + regionID;
     }
 
+    /**
+     * Gets the current player's name
+     */
     private String getCurrentPlayerName()
     {
-        return client.getLocalPlayer() != null
-                ? client.getLocalPlayer().getName()
-                : "Unknown";
+        return client.getLocalPlayer() != null ? client.getLocalPlayer().getName() : "Unknown";
     }
 
+    /**
+     * Gets the current world number
+     */
     private int getCurrentWorldNumber()
     {
         return client.getWorld();
     }
 
+    /**
+     * Gets the current world type
+     */
     private String getCurrentWorldType()
     {
         return client.getWorldType().toString();
