@@ -734,12 +734,13 @@ public class BingoPlugin extends Plugin {
     public void updateItemsFromFirebase(List<BingoItem> updatedItems) {
         String currentProfile = config.currentProfile();
         
+        // Safety check for null or empty updates
         if (updatedItems == null || updatedItems.isEmpty()) {
             log.debug("Received empty item list from team storage");
             
-            // Check if we currently have items - if so, don't replace with empty
+            // Only ignore empty updates when we already have items
             if (!items.isEmpty()) {
-                log.info("[PROFILE_DEBUG] Ignoring empty update when we have {} existing items", items.size());
+                log.info("Ignoring empty update when we have {} existing items", items.size());
                 return;
             }
             
@@ -769,40 +770,35 @@ public class BingoPlugin extends Plugin {
 
             // Add the updated items
             for (BingoItem item : updatedItems) {
-                // Check if this was a group item in our existing items
+                // Preserve obtained status if the item already existed
                 BingoItem existingItem = existingItemsByName.get(item.getName().toLowerCase());
-                if (existingItem != null && existingItem.isGroup()) {
-                    // Preserve group information
-                    item.setGroup(true);
-                    item.setAlternativeNames(existingItem.getAlternativeNames());
-                    
-                    // If the item ID is -1 but the existing item had an ID, use that
-                    if (item.getItemId() == -1 && existingItem.getItemId() > 0) {
-                        item.setItemId(existingItem.getItemId());
+                if (existingItem != null) {
+                    // If the item was already obtained in our existing data, keep it that way
+                    // Unless the updated item specifically marks it as not obtained (team state takes priority)
+                    if (existingItem.isObtained() && !item.isObtained()) {
+                        // Only apply the existing obtained status if we're using local persistence
+                        if (!profileManager.getProfilePersistObtained()) {
+                            item.setObtained(true);
+                        }
                     }
-                } else {
-                    // Check if this might be a group item based on its name
-                    detectAndProcessGroupItem(item);
+                    
+                    // Preserve group information if it exists
+                    if (existingItem.isGroup() && !item.isGroup()) {
+                        item.setGroup(true);
+                        item.setAlternativeNames(existingItem.getAlternativeNames());
+                    }
                 }
                 
-                // If the item ID is still -1, try to resolve it
-                if (item.getItemId() == -1) {
-                    resolveItemId(item);
-                }
-
                 items.add(item);
                 itemsByName.put(item.getName().toLowerCase(), item);
             }
 
-            // Load obtained status
+            // Load any saved items (applicable for non-persistObtained team profiles)
             loadSavedItems();
 
             // Update the UI
             SwingUtilities.invokeLater(() -> {
-                Optional.ofNullable(panel).ifPresent(p -> {
-                    p.updateItems(items);
-                    p.updateSourceWarningLabel();
-                });
+                Optional.ofNullable(panel).ifPresent(p -> p.updateItems(new ArrayList<>(items)));
             });
         });
     }
@@ -1138,79 +1134,56 @@ public class BingoPlugin extends Plugin {
         BingoConfig.BingoMode bingoMode = profileManager.getProfileBingoMode();
         log.info("Current profile bingo mode: {}", bingoMode);
         
-        // If this is a team profile, register a team listener to receive updates
+        // If this is a team profile, handle team-specific logic
         if (bingoMode == BingoConfig.BingoMode.TEAM) {
             String teamCode = profileManager.getProfileTeamCode();
             if (teamCode != null && !teamCode.isEmpty()) {
-                log.info("Registering team listener for team: {}", teamCode);
+                log.info("Processing team: {}", teamCode);
                 
-                // IMPORTANT: Check for cached items before registering the team listener
+                // CRITICAL STEP 1: Get cached items BEFORE registering listener
                 // This ensures we have items to display immediately during profile switching
                 List<BingoItem> cachedItems = teamService.getTeamCachedItems(teamCode);
                 if (cachedItems != null && !cachedItems.isEmpty()) {
-                    log.info("[PROFILE_DEBUG] Using {} cached items immediately for team {}", 
+                    log.info("Using {} cached items immediately for team {}", 
                         cachedItems.size(), teamCode);
                     
-                    // Add the cached items
+                    // Add the cached items to our collections
                     for (BingoItem item : cachedItems) {
                         items.add(item);
                         itemsByName.put(item.getName().toLowerCase(), item);
                     }
                     
-                    // Update the UI immediately with cached items
+                    // CRITICAL STEP 2: Update the UI immediately with cached items
+                    // Must happen before async operations to ensure instant display
                     SwingUtilities.invokeLater(() -> {
-                        Optional.ofNullable(panel).ifPresent(p -> {
-                            p.updateItems(items);
-                            p.updateSourceWarningLabel();
-                        });
+                        if (panel != null) {
+                            panel.updateItems(new ArrayList<>(items));
+                            panel.updateSourceWarningLabel();
+                        }
                     });
+                } else {
+                    log.info("No cached items available for team {}", teamCode);
                 }
                 
-                // Use a static boolean to track if we're in the middle of a refresh for this team/profile combo
-                final String profileTeamKey = currentProfile + ":" + teamCode;
+                // Now register the team listener to receive updates going forward
+                // This is done AFTER checking the cache to prioritize immediate display
+                log.info("Registering team listener for team: {}", teamCode);
+                teamService.registerTeamListener(teamCode, this::updateItemsFromFirebase);
                 
-                // Register a team listener
-                teamService.registerTeamListener(teamCode, updatedItems -> {
-                    // Only process updates if we're still on the same profile
-                    if (!currentProfile.equals(config.currentProfile())) {
-                        log.info("Ignoring team items update because profile has changed");
-                        return;
-                    }
-                    
-                    log.info("Received team items update: {} items", updatedItems.size());
-                    
-                    // Update our items
-                    clientThread.invokeLater(() -> {
-                        // Skip empty updates if we already have cached items
-                        if (updatedItems.isEmpty() && !items.isEmpty()) {
-                            log.info("[PROFILE_DEBUG] Skipping empty update - keeping existing {} items", 
-                                items.size());
-                            return;
-                        }
-                        
-                        // Clear existing items
-                        items.clear();
-                        itemsByName.clear();
-                        
-                        // Add the updated items
-                        for (BingoItem item : updatedItems) {
-                            items.add(item);
-                            itemsByName.put(item.getName().toLowerCase(), item);
-                        }
-                        
-                        // Update the UI
-                        SwingUtilities.invokeLater(() -> {
-                            Optional.ofNullable(panel).ifPresent(p -> p.updateItems(items));
-                        });
-                    });
-                });
+                // Provide fast feedback in the UI regardless of network state
+                loadSavedItems();
                 
-                // Return early - the team listener will handle loading items
-                return;
+                // If we already loaded items from cache, we're done
+                if (!items.isEmpty()) {
+                    log.info("Using cached items for display, async update will happen in background");
+                    return;
+                }
+                
+                // If no cached items, continue with standard item loading below
             }
         }
-
-        // For non-team profiles or team profiles without a team code, load items based on the item source type
+        
+        // Load items based on the current source
         loadItems();
 
         // Update the UI
@@ -2007,14 +1980,44 @@ public class BingoPlugin extends Plugin {
         // Clear existing items first
         clearItems();
         
-        // Reload all items
+        // Get the current profile's bingo mode
+        BingoConfig.BingoMode bingoMode = profileManager.getProfileBingoMode();
+        
+        // For team profiles, check the cache first for immediate display
+        if (bingoMode == BingoConfig.BingoMode.TEAM) {
+            String teamCode = profileManager.getProfileTeamCode();
+            if (teamCode != null && !teamCode.isEmpty()) {
+                log.info("Checking cache for team: {}", teamCode);
+                
+                // Get cached items immediately
+                List<BingoItem> cachedItems = teamService.getTeamCachedItems(teamCode);
+                if (cachedItems != null && !cachedItems.isEmpty()) {
+                    log.info("Using {} cached items immediately for team {}", 
+                        cachedItems.size(), teamCode);
+                    
+                    // Add the cached items
+                    for (BingoItem item : cachedItems) {
+                        items.add(item);
+                        itemsByName.put(item.getName().toLowerCase(), item);
+                    }
+                    
+                    // Update the UI immediately with cached items
+                    SwingUtilities.invokeLater(() -> {
+                        if (panel != null) {
+                            panel.updateItems(new ArrayList<>(items));
+                        }
+                    });
+                }
+            }
+        }
+        
+        // Reload all items - this will also handle registering team listeners
         reloadItems();
         
         // Load saved items (obtained status)
         loadSavedItems();
         
         // For team profiles, also refresh team items
-        BingoConfig.BingoMode bingoMode = profileManager.getProfileBingoMode();
         if (bingoMode == BingoConfig.BingoMode.TEAM) {
             String teamCode = profileManager.getProfileTeamCode();
             if (teamCode != null && !teamCode.isEmpty()) {
@@ -2023,7 +2026,7 @@ public class BingoPlugin extends Plugin {
             }
         }
         
-        // Update the UI
+        // Update the UI again to be sure
         updateUI();
         
         log.info("Completed force reload of items for profile: {}", currentProfile);
