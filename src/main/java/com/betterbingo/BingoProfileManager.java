@@ -339,34 +339,33 @@ public class BingoProfileManager {
     }
 
     /**
-     * Switches to a different profile
-     * @param profileKey The profile key
+     * Switches to a different profile.
+     *
+     * @param profileKey The profile to switch to
      */
     public void switchProfile(String profileKey) {
-        if (profileKey == null || profileKey.isEmpty()) {
-            log.error("Attempted to switch to null or empty profile");
+        log.info("Switching to profile: {}", profileKey);
+        log.info("[PROFILE_DEBUG] ===== PROFILE SWITCH INITIATED =====");
+        
+        // Only proceed if the profile actually exists
+        if (!getProfiles().contains(profileKey)) {
+            log.error("Cannot switch to non-existent profile: {}", profileKey);
             return;
         }
-
-        log.info("Switching profile in config: {}", profileKey);
-        log.info("[PROFILE_DEBUG] ===== SWITCHING PROFILES =====");
-        log.info("[PROFILE_DEBUG] Switching from profile: {} to profile: {}", config.currentProfile(), profileKey);
+        
+        // Check if it's the same profile
+        if (profileKey.equals(config.currentProfile())) {
+            log.info("Already on profile: {}", profileKey);
+            return;
+        }
         
         try {
-            // Save current profile first
-            final String currentProfile = config.currentProfile();
-            if (currentProfile != null && !currentProfile.isEmpty()) {
-                saveProfile(currentProfile);
-                
-                // Get profile info for debugging
-                String currentRemoteUrl = getProfileKey(currentProfile, CONFIG_KEY_REMOTE_URL);
-                BingoConfig.ItemSourceType currentSourceType = BingoConfig.ItemSourceType.valueOf(
-                    getProfileKey(currentProfile, CONFIG_KEY_ITEM_SOURCE_TYPE));
-                log.info("[PROFILE_DEBUG] Leaving profile: {} (sourceType={}, remoteUrl={})", 
-                    currentProfile, currentSourceType, currentRemoteUrl);
-            }
+            // Save the current profile configuration
+            String currentProfile = config.currentProfile();
+            log.info("[PROFILE_DEBUG] Saving current profile {} before switching to {}", 
+                    currentProfile, profileKey);
             
-            // Unregister team listeners for the current profile
+            // Get profile data for debugging
             final String currentTeamCode = getProfileTeamCode(currentProfile);
             if (currentTeamCode != null && !currentTeamCode.isEmpty() && 
                     getProfileBingoMode(currentProfile) == BingoConfig.BingoMode.TEAM) {
@@ -400,6 +399,15 @@ public class BingoProfileManager {
             if (newTeamCode != null && !newTeamCode.isEmpty() && 
                     getProfileBingoMode(profileKey) == BingoConfig.BingoMode.TEAM) {
                 log.info("Registering team listeners for profile: {}, teamCode: {}", profileKey, newTeamCode);
+                
+                // CRITICAL: Use cached items first if available to ensure immediate display
+                List<BingoItem> cachedItems = teamService.getTeamCachedItems(newTeamCode);
+                if (cachedItems != null && !cachedItems.isEmpty()) {
+                    log.info("[PROFILE_DEBUG] Found {} cached items for team {}. Using these for immediate display.", 
+                        cachedItems.size(), newTeamCode);
+                }
+                
+                // Now register the team listeners which will trigger further updates
                 registerTeamListeners(profileKey);
                 
                 // IMPORTANT IMPROVEMENT: Immediately ensure database is up-to-date 
