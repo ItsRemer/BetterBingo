@@ -736,6 +736,13 @@ public class BingoPlugin extends Plugin {
         
         if (updatedItems == null || updatedItems.isEmpty()) {
             log.debug("Received empty item list from team storage");
+            
+            // Check if we currently have items - if so, don't replace with empty
+            if (!items.isEmpty()) {
+                log.info("[PROFILE_DEBUG] Ignoring empty update when we have {} existing items", items.size());
+                return;
+            }
+            
             return;
         }
 
@@ -1137,6 +1144,28 @@ public class BingoPlugin extends Plugin {
             if (teamCode != null && !teamCode.isEmpty()) {
                 log.info("Registering team listener for team: {}", teamCode);
                 
+                // IMPORTANT: Check for cached items before registering the team listener
+                // This ensures we have items to display immediately during profile switching
+                List<BingoItem> cachedItems = teamService.getTeamCachedItems(teamCode);
+                if (cachedItems != null && !cachedItems.isEmpty()) {
+                    log.info("[PROFILE_DEBUG] Using {} cached items immediately for team {}", 
+                        cachedItems.size(), teamCode);
+                    
+                    // Add the cached items
+                    for (BingoItem item : cachedItems) {
+                        items.add(item);
+                        itemsByName.put(item.getName().toLowerCase(), item);
+                    }
+                    
+                    // Update the UI immediately with cached items
+                    SwingUtilities.invokeLater(() -> {
+                        Optional.ofNullable(panel).ifPresent(p -> {
+                            p.updateItems(items);
+                            p.updateSourceWarningLabel();
+                        });
+                    });
+                }
+                
                 // Use a static boolean to track if we're in the middle of a refresh for this team/profile combo
                 final String profileTeamKey = currentProfile + ":" + teamCode;
                 
@@ -1152,7 +1181,13 @@ public class BingoPlugin extends Plugin {
                     
                     // Update our items
                     clientThread.invokeLater(() -> {
-                        // Only update if we haven't already refreshed with a newer data set
+                        // Skip empty updates if we already have cached items
+                        if (updatedItems.isEmpty() && !items.isEmpty()) {
+                            log.info("[PROFILE_DEBUG] Skipping empty update - keeping existing {} items", 
+                                items.size());
+                            return;
+                        }
+                        
                         // Clear existing items
                         items.clear();
                         itemsByName.clear();

@@ -349,12 +349,21 @@ public class BingoProfileManager {
         }
 
         log.info("Switching profile in config: {}", profileKey);
+        log.info("[PROFILE_DEBUG] ===== SWITCHING PROFILES =====");
+        log.info("[PROFILE_DEBUG] Switching from profile: {} to profile: {}", config.currentProfile(), profileKey);
         
         try {
             // Save current profile first
             final String currentProfile = config.currentProfile();
             if (currentProfile != null && !currentProfile.isEmpty()) {
                 saveProfile(currentProfile);
+                
+                // Get profile info for debugging
+                String currentRemoteUrl = getProfileKey(currentProfile, CONFIG_KEY_REMOTE_URL);
+                BingoConfig.ItemSourceType currentSourceType = BingoConfig.ItemSourceType.valueOf(
+                    getProfileKey(currentProfile, CONFIG_KEY_ITEM_SOURCE_TYPE));
+                log.info("[PROFILE_DEBUG] Leaving profile: {} (sourceType={}, remoteUrl={})", 
+                    currentProfile, currentSourceType, currentRemoteUrl);
             }
             
             // Unregister team listeners for the current profile
@@ -379,17 +388,52 @@ public class BingoProfileManager {
                 log.info("Profile switch config verified successful: {}", profileKey);
             }
             
+            // Get profile info for debugging
+            String newRemoteUrl = getProfileKey(profileKey, CONFIG_KEY_REMOTE_URL);
+            BingoConfig.ItemSourceType newSourceType = BingoConfig.ItemSourceType.valueOf(
+                getProfileKey(profileKey, CONFIG_KEY_ITEM_SOURCE_TYPE));
+            log.info("[PROFILE_DEBUG] Entering profile: {} (sourceType={}, remoteUrl={})", 
+                profileKey, newSourceType, newRemoteUrl);
+            
             // Register team listeners for the new profile
             final String newTeamCode = getProfileTeamCode(profileKey);
             if (newTeamCode != null && !newTeamCode.isEmpty() && 
                     getProfileBingoMode(profileKey) == BingoConfig.BingoMode.TEAM) {
                 log.info("Registering team listeners for profile: {}, teamCode: {}", profileKey, newTeamCode);
                 registerTeamListeners(profileKey);
+                
+                // IMPORTANT IMPROVEMENT: Immediately ensure database is up-to-date 
+                // by forcing a refresh from remote URL for team profiles
+                if (newSourceType == BingoConfig.ItemSourceType.REMOTE && 
+                    newRemoteUrl != null && !newRemoteUrl.isEmpty()) {
+                    
+                    log.info("[PROFILE_DEBUG] Forcing immediate database update from remote URL: {}", newRemoteUrl);
+                    // Run this in a background thread to avoid blocking the UI
+                    new Thread(() -> {
+                        try {
+                            log.info("[PROFILE_DEBUG] Starting forced sync for team: {}", newTeamCode);
+                            CompletableFuture<Boolean> refreshFuture = teamService.refreshTeamItems(newTeamCode);
+                            
+                            // Wait for the refresh to complete (with timeout)
+                            boolean success = refreshFuture.get(15, java.util.concurrent.TimeUnit.SECONDS);
+                            
+                            if (success) {
+                                log.info("[PROFILE_DEBUG] Successfully synced database with remote URL for team: {}", newTeamCode);
+                            } else {
+                                log.warn("[PROFILE_DEBUG] Failed to sync database with remote URL for team: {}", newTeamCode);
+                            }
+                        } catch (Exception e) {
+                            log.error("[PROFILE_DEBUG] Error during forced sync for team: {}", newTeamCode, e);
+                        }
+                    }, "Profile-DB-Sync-Thread").start();
+                }
             }
             
             log.info("Profile switch config update complete for: {}", profileKey);
+            log.info("[PROFILE_DEBUG] ===== PROFILE SWITCH COMPLETE =====");
         } catch (Exception e) {
             log.error("Error during profile switch config update", e);
+            log.error("[PROFILE_DEBUG] Profile switch failed with error", e);
         }
     }
 

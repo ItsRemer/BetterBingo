@@ -170,12 +170,18 @@ public class BingoAntiCheat
     }
 
     /**
-     * Checks if the location is valid for the given item
-     * This is a placeholder for more sophisticated validation
+     * Checks if the location is valid for the given item.
+     * This is currently a placeholder that always returns true.
+     * 
+     * TODO: Implement proper location validation when we have a database of valid locations for items.
+     * 
+     * @param itemName The name of the item to check
+     * @param location The location where the item was acquired
+     * @return Currently always returns true
      */
     private boolean isValidLocationForItem(String itemName, String location)
     {
-        // For now, we'll just return true
+        // Always returns true for now
         // In the future, this could check against a database of valid locations for each item
         return true;
     }

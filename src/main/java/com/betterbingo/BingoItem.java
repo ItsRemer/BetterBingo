@@ -36,6 +36,26 @@ public class BingoItem
     }
     
     /**
+     * Copy constructor for BingoItem.
+     * Creates a deep copy of the given BingoItem.
+     * 
+     * @param other The BingoItem to copy
+     */
+    public BingoItem(BingoItem other) {
+        this.name = other.name;
+        this.obtained = other.obtained;
+        this.itemId = other.itemId;
+        this.isGroup = other.isGroup;
+        
+        // Deep copy of alternative names
+        if (other.alternativeNames != null) {
+            this.alternativeNames = new ArrayList<>(other.alternativeNames);
+        } else {
+            this.alternativeNames = new ArrayList<>();
+        }
+    }
+    
+    /**
      * Creates a BingoItem from a BingoItemGroup.
      * 
      * @param group The BingoItemGroup to create the item from
