@@ -1,7 +1,6 @@
 package com.betterbingo;
 
 import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.google.inject.Inject;
 import lombok.NonNull;
@@ -68,6 +67,7 @@ public class BingoProfileManager {
     /**
      * GSON instance for serialization/deserialization.
      */
+    @Inject
     private Gson gson;
     
     /**
@@ -83,12 +83,6 @@ public class BingoProfileManager {
         this.teamService = teamService;
         this.plugin = plugin;
         this.profileLock = new ReentrantLock();
-        
-        // Create a well-configured Gson instance for consistent serialization
-        this.gson = new GsonBuilder()
-            .serializeNulls()
-            .disableHtmlEscaping()
-            .create();
         
         // Define the configuration group
         configManager.getConfiguration(CONFIG_GROUP, "version", String.class);
@@ -119,9 +113,7 @@ public class BingoProfileManager {
                 return new ArrayList<>();
             }
             
-            // Create a more lenient Gson parser
-            Gson gson = new GsonBuilder().setLenient().create();
-            
+            // Use the injected Gson instance with lenient settings
             try {
                 // First try parsing as a string array
                 Type listType = new TypeToken<ArrayList<String>>() {}.getType();
@@ -168,9 +160,7 @@ public class BingoProfileManager {
      */
     private boolean saveProfiles(List<String> profiles) {
         try {
-            // Create a Gson serializer
-            Gson gson = new GsonBuilder().create();
-            
+            // Use the injected Gson instance
             // Ensure we serialize as a JSON array even for a single profile
             String profilesJson = gson.toJson(profiles);
             

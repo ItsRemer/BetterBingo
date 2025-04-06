@@ -22,11 +22,9 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
-import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.Tile;
 import net.runelite.api.TileItem;
-import net.runelite.api.events.GameTick;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
@@ -44,9 +42,6 @@ import net.runelite.client.util.ImageUtil;
 import net.runelite.http.api.item.ItemPrice;
 import okhttp3.*;
 import com.google.gson.Gson;
-import com.google.gson.reflect.TypeToken;
-
-import java.lang.reflect.Type;
 import java.util.Map;
 
 import net.runelite.api.ItemComposition;
@@ -62,10 +57,7 @@ import java.util.HashSet;
 import java.util.Set;
 
 import java.util.function.Consumer;
-import java.util.function.Function;
 import java.util.HashMap;
-
-import net.runelite.client.util.Text;
 
 import java.io.IOException;
 
@@ -75,12 +67,16 @@ import java.util.Optional;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
+import net.runelite.client.chat.ChatMessageManager;
+import net.runelite.client.chat.QueuedMessage;
+
 /**
  * Bingo Plugin for RuneLite
  * Tracks items for bingo events and sends notifications to Discord
  * Supports loading items from Pastebin for easy sharing
  */
 @Slf4j
+@SuppressWarnings({"deprecation", "unchecked"})
 @PluginDescriptor(
         name = "Bingo",
         description = "Track items for bingo events. Supports Pastebin for easy sharing.",
@@ -125,6 +121,8 @@ public class BingoPlugin extends Plugin {
     private BingoProfileManager profileManager;
     @Inject
     private BingoTeamService teamService;
+    @Inject
+    private ChatMessageManager chatMessageManager;
 
     @Getter
     private final List<BingoItem> items = new ArrayList<>();
@@ -133,40 +131,6 @@ public class BingoPlugin extends Plugin {
     private final Set<Integer> recentlyKilledNpcs = new HashSet<>();
     private BingoPanel panel;
     private NavigationButton navButton;
-    private boolean hasShownNotification = false;
-    private boolean hasShownItemNotification = false;
-    private boolean hasShownTeamNotification = false;
-
-    // Backup profile tracking to handle when the config system fails
-    private String currentProfileBackup = null;
-    
-    /**
-     * Gets the current profile, using the backup tracking if config system is unreliable
-     * @return The current profile name
-     */
-    public String getCurrentProfileReliably() {
-        // Try config first
-        String configProfile = config.currentProfile();
-        
-        // If the config is empty but we have a backup, use that
-        if ((configProfile == null || configProfile.isEmpty()) && currentProfileBackup != null) {
-            log.warn("Config returned empty profile, using backup: {}", currentProfileBackup);
-            return currentProfileBackup;
-        }
-        
-        // If config has a value, update our backup
-        if (configProfile != null && !configProfile.isEmpty()) {
-            // Update backup value when config has a valid value
-            if (!configProfile.equals(currentProfileBackup)) {
-                log.debug("Updating profile backup: {} -> {}", currentProfileBackup, configProfile);
-                currentProfileBackup = configProfile;
-            }
-            return configProfile;
-        }
-        
-        // Fallback to default
-        return "default";
-    }
 
     /**
      * Represents an item that has been obtained
@@ -179,14 +143,6 @@ public class BingoPlugin extends Plugin {
         public ObtainedItem(BingoItem bingoItem, int index) {
             this.bingoItem = bingoItem;
             this.index = index;
-        }
-
-        public BingoItem getBingoItem() {
-            return bingoItem;
-        }
-
-        public int getIndex() {
-            return index;
         }
 
         public String getName() {
@@ -240,7 +196,7 @@ public class BingoPlugin extends Plugin {
     }
 
     @Override
-    protected void startUp() throws Exception {
+    protected void startUp() {
         try {
             log.info("Starting Bingo plugin");
 
@@ -871,12 +827,10 @@ public class BingoPlugin extends Plugin {
 
         // Show chat message only if enabled
         if (shouldShowChatNotifications()) {
-            client.addChatMessage(
-                    ChatMessageType.GAMEMESSAGE,
-                    "",
-                    "Bingo: Obtained item " + itemName,
-                    null
-            );
+            chatMessageManager.queue(QueuedMessage.builder()
+                    .type(ChatMessageType.GAMEMESSAGE)
+                    .runeLiteFormattedMessage("Bingo: Obtained item " + itemName)
+                    .build());
         }
     }
 
@@ -1073,12 +1027,10 @@ public class BingoPlugin extends Plugin {
 
         // Show chat message only if enabled
         if (shouldShowChatNotifications()) {
-            client.addChatMessage(
-                    ChatMessageType.GAMEMESSAGE,
-                    "",
-                    "Bingo: " + message,
-                    null
-            );
+            chatMessageManager.queue(QueuedMessage.builder()
+                    .type(ChatMessageType.GAMEMESSAGE)
+                    .runeLiteFormattedMessage("Bingo: " + message)
+                    .build());
         }
     }
 
@@ -1472,8 +1424,10 @@ public class BingoPlugin extends Plugin {
         updateUI();
 
         if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
-            client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
-                    "Bingo board has been reset.", "");
+            chatMessageManager.queue(QueuedMessage.builder()
+                    .type(ChatMessageType.GAMEMESSAGE)
+                    .runeLiteFormattedMessage("Bingo board has been reset.")
+                    .build());
         }
 
         log.debug("Bingo board reset for profile: {}", config.currentProfile());
@@ -1848,8 +1802,10 @@ public class BingoPlugin extends Plugin {
         if (profileManager.getProfileBingoMode() != BingoConfig.BingoMode.TEAM) {
             log.warn("Cannot refresh team items: not in a team profile");
             if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
-                client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
-                        "Cannot refresh team items: not in a team profile.", "");
+                chatMessageManager.queue(QueuedMessage.builder()
+                        .type(ChatMessageType.GAMEMESSAGE)
+                        .runeLiteFormattedMessage("Cannot refresh team items: not in a team profile.")
+                        .build());
             }
             return;
         }
@@ -1859,8 +1815,10 @@ public class BingoPlugin extends Plugin {
         if (teamCode == null || teamCode.isEmpty()) {
             log.warn("Cannot refresh team items: no team code");
             if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
-                client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
-                        "Cannot refresh team items: no team code.", "");
+                chatMessageManager.queue(QueuedMessage.builder()
+                        .type(ChatMessageType.GAMEMESSAGE)
+                        .runeLiteFormattedMessage("Cannot refresh team items: no team code.")
+                        .build());
             }
             return;
         }
@@ -1869,8 +1827,10 @@ public class BingoPlugin extends Plugin {
         if (profileManager.getProfileItemSourceType() != BingoConfig.ItemSourceType.REMOTE) {
             log.warn("Cannot refresh team items: profile is not using a remote URL");
             if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
-                client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
-                        "Cannot refresh team items: profile is not using a remote URL.", "");
+                chatMessageManager.queue(QueuedMessage.builder()
+                        .type(ChatMessageType.GAMEMESSAGE)
+                        .runeLiteFormattedMessage("Cannot refresh team items: profile is not using a remote URL.")
+                        .build());
             }
             return;
         }
@@ -1880,16 +1840,20 @@ public class BingoPlugin extends Plugin {
         if (remoteUrl == null || remoteUrl.isEmpty()) {
             log.warn("Cannot refresh team items: no remote URL configured");
             if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
-                client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
-                        "Cannot refresh team items: no remote URL configured.", "");
+                chatMessageManager.queue(QueuedMessage.builder()
+                        .type(ChatMessageType.GAMEMESSAGE)
+                        .runeLiteFormattedMessage("Cannot refresh team items: no remote URL configured.")
+                        .build());
             }
             return;
         }
         
         // Show notification that refresh has started
         if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
-            client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
-                    "Refreshing team items from remote URL...", "");
+            chatMessageManager.queue(QueuedMessage.builder()
+                    .type(ChatMessageType.GAMEMESSAGE)
+                    .runeLiteFormattedMessage("Refreshing team items from remote URL...")
+                    .build());
         }
         
         final String finalTeamCode = teamCode;
@@ -1902,8 +1866,10 @@ public class BingoPlugin extends Plugin {
                     if (success) {
                         log.info("Successfully refreshed team items from remote URL");
                         if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
-                            client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
-                                    "Successfully refreshed team items from remote URL.", "");
+                            chatMessageManager.queue(QueuedMessage.builder()
+                                    .type(ChatMessageType.GAMEMESSAGE)
+                                    .runeLiteFormattedMessage("Successfully refreshed team items from remote URL.")
+                                    .build());
                         }
                         
                         // Reload items
@@ -1911,8 +1877,10 @@ public class BingoPlugin extends Plugin {
                     } else {
                         log.error("Failed to refresh team items from remote URL");
                         if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
-                            client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
-                                    "Failed to refresh team items from remote URL.", "");
+                            chatMessageManager.queue(QueuedMessage.builder()
+                                    .type(ChatMessageType.GAMEMESSAGE)
+                                    .runeLiteFormattedMessage("Failed to refresh team items from remote URL.")
+                                    .build());
                         }
                         
                         // Try to reload items anyway from cache or local storage
@@ -1926,14 +1894,18 @@ public class BingoPlugin extends Plugin {
                     if (ex.getCause() instanceof TimeoutException) {
                         log.error("Timeout while refreshing team items", ex);
                         if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
-                            client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
-                                    "Timeout while refreshing team items. The server is taking too long to respond.", "");
+                            chatMessageManager.queue(QueuedMessage.builder()
+                                    .type(ChatMessageType.GAMEMESSAGE)
+                                    .runeLiteFormattedMessage("Timeout while refreshing team items. The server is taking too long to respond.")
+                                    .build());
                         }
                     } else {
                         log.error("Error refreshing team items", ex);
                         if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
-                            client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
-                                    "Error refreshing team items: " + ex.getMessage(), "");
+                            chatMessageManager.queue(QueuedMessage.builder()
+                                    .type(ChatMessageType.GAMEMESSAGE)
+                                    .runeLiteFormattedMessage("Error refreshing team items: " + ex.getMessage())
+                                    .build());
                         }
                     }
                     

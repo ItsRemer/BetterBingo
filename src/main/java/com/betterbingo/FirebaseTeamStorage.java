@@ -11,12 +11,9 @@ import net.runelite.api.Client;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 import java.io.IOException;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.stream.Collectors;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -37,12 +34,12 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
 
     @Inject
     public FirebaseTeamStorage(OkHttpClient httpClient, Gson gson, ScheduledExecutorService executorService, Client client) {
-        // Create a new OkHttpClient with optimized settings
+        // Use the injected OkHttpClient instead of getting a new one with OkHttpClient
         Dispatcher dispatcher = new Dispatcher();
         dispatcher.setMaxRequests(20);         // Limit total concurrent requests
         dispatcher.setMaxRequestsPerHost(5);   // Limit concurrent requests per host
         
-        this.httpClient = new OkHttpClient.Builder()
+        this.httpClient = httpClient.newBuilder()
             .cache(null)                       // Disable caching completely
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
