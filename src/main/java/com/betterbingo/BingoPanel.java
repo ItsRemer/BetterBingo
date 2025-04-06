@@ -64,6 +64,7 @@ public class BingoPanel extends PluginPanel {
     private final JButton resetButton = new JButton("Reset Board");
     private final JButton remoteUpdateButton = new JButton("Update from URL");
     private final JButton refreshTeamButton = new JButton("Refresh Team Items");
+    private final JButton syncFirebaseButton = new JButton("Sync from Firebase");
     private final JLabel sourceWarningLabel = new JLabel();
     private final JLabel itemLimitWarningLabel = new JLabel();
     private final JLabel teamStorageWarningLabel = new JLabel();
@@ -159,9 +160,13 @@ public class BingoPanel extends PluginPanel {
             plugin.refreshTeamItems();
         });
         
+        syncFirebaseButton.setToolTipText("Sync from Firebase");
+        syncFirebaseButton.setFocusPainted(false);
+        syncFirebaseButton.addActionListener(e -> plugin.refreshUIFromFirebase());
+        
         controlPanel.setBackground(ColorScheme.DARK_GRAY_COLOR);
         controlPanel.add(resetButton);
-        controlPanel.add(remoteUpdateButton);
+        controlPanel.add(syncFirebaseButton);
         controlPanel.add(refreshTeamButton);
         
         // Create a top panel for warnings and profile
@@ -456,8 +461,15 @@ public class BingoPanel extends PluginPanel {
         
         // Update the combo box
         profileComboBox.removeAllItems();
+        
+        // Force a refresh of profiles directly from the config system
+        // We need to force this to ensure newly created profiles show up
         List<String> profiles = profileManager.getProfiles();
+        log.info("Got {} profiles from profileManager", profiles.size());
+        
+        // Directly add each profile to the combo box
         for (String profile : profiles) {
+            log.info("Adding profile to combo box: {}", profile);
             profileComboBox.addItem(profile);
         }
         
@@ -473,6 +485,7 @@ public class BingoPanel extends PluginPanel {
                 if (profileComboBox.getItemAt(i).equals(currentProfile)) {
                     profileComboBox.setSelectedIndex(i);
                     profileFound = true;
+                    log.info("Selected profile in dropdown: {} at index {}", currentProfile, i);
                     break;
                 }
             }
@@ -567,22 +580,25 @@ public class BingoPanel extends PluginPanel {
         updateSourceWarningLabel();
         controlPanel.removeAll();
         BingoConfig.ItemSourceType itemSourceType = profileManager.getProfileItemSourceType();
-        if (itemSourceType == BingoConfig.ItemSourceType.REMOTE) {
-            controlPanel.add(remoteUpdateButton);
-            controlPanel.add(Box.createHorizontalStrut(10)); // Add spacing
-        }
+        
         controlPanel.add(resetButton);
+        
+        // Show sync from Firebase button for team profiles
+        BingoConfig.BingoMode bingoMode = profileManager.getProfileBingoMode();
+        if (bingoMode == BingoConfig.BingoMode.TEAM) {
+            controlPanel.add(syncFirebaseButton);
+        }
+        
         controlPanel.add(refreshTeamButton);
         controlPanel.revalidate();
         controlPanel.repaint();
         revalidate();
         repaint();
 
-        // Show/hide the remote update button based on the item source type
-        remoteUpdateButton.setVisible(itemSourceType == BingoConfig.ItemSourceType.REMOTE);
+        // Always hide the remote update button
+        remoteUpdateButton.setVisible(false);
         
         // Show/hide the refresh team button based on the bingo mode and item source type
-        BingoConfig.BingoMode bingoMode = profileManager.getProfileBingoMode();
         refreshTeamButton.setVisible(bingoMode == BingoConfig.BingoMode.TEAM && 
                                     itemSourceType == BingoConfig.ItemSourceType.REMOTE);
         
@@ -991,16 +1007,100 @@ public class BingoPanel extends PluginPanel {
         jc.gridx = 1;
         joinTeamPanel.add(teamCodeField, jc);
         
+        // Create a solo panel with the same options as team panel
+        JPanel soloPanel = new JPanel(new GridBagLayout());
+        GridBagConstraints sc = new GridBagConstraints();
+        sc.fill = GridBagConstraints.HORIZONTAL;
+        sc.insets = new Insets(2, 2, 2, 2);
+        
+        // Discord webhook field for solo
+        JTextField soloWebhookField = new JTextField(config.discordWebhook(), 20);
+        sc.gridx = 0;
+        sc.gridy = 0;
+        soloPanel.add(new JLabel("Discord Webhook:"), sc);
+        sc.gridx = 1;
+        soloPanel.add(soloWebhookField, sc);
+        
+        // Item source type combo box for solo
+        JComboBox<BingoConfig.ItemSourceType> soloItemSourceTypeComboBox = new JComboBox<>(BingoConfig.ItemSourceType.values());
+        soloItemSourceTypeComboBox.setSelectedItem(profileManager.getProfileItemSourceType());
+        sc.gridx = 0;
+        sc.gridy = 1;
+        soloPanel.add(new JLabel("Item Source:"), sc);
+        sc.gridx = 1;
+        soloPanel.add(soloItemSourceTypeComboBox, sc);
+        
+        // Remote URL field for solo
+        JTextField soloRemoteUrlField = new JTextField(profileManager.getProfileRemoteUrl(), 20);
+        sc.gridx = 0;
+        sc.gridy = 2;
+        soloPanel.add(new JLabel("Remote URL:"), sc);
+        sc.gridx = 1;
+        soloPanel.add(soloRemoteUrlField, sc);
+        
+        // Manual items field for solo
+        JTextArea soloManualItemsArea = new JTextArea(profileManager.getProfileItemList(), 5, 20);
+        JScrollPane soloManualItemsScrollPane = new JScrollPane(soloManualItemsArea);
+        sc.gridx = 0;
+        sc.gridy = 3;
+        sc.gridwidth = 2;
+        soloPanel.add(new JLabel("Manual Items (one per line):"), sc);
+        sc.gridy = 4;
+        soloPanel.add(soloManualItemsScrollPane, sc);
+        
+        // Add listener to enable/disable fields based on item source type for solo
+        soloItemSourceTypeComboBox.addActionListener(e -> {
+            BingoConfig.ItemSourceType selectedType = (BingoConfig.ItemSourceType) soloItemSourceTypeComboBox.getSelectedItem();
+            if (selectedType == BingoConfig.ItemSourceType.MANUAL) {
+                soloRemoteUrlField.setEnabled(false);
+                soloManualItemsArea.setEnabled(true);
+            } else {
+                soloRemoteUrlField.setEnabled(true);
+                soloManualItemsArea.setEnabled(false);
+            }
+        });
+        
+        // Set initial state based on selected item source type for solo
+        BingoConfig.ItemSourceType soloInitialType = (BingoConfig.ItemSourceType) soloItemSourceTypeComboBox.getSelectedItem();
+        if (soloInitialType == BingoConfig.ItemSourceType.MANUAL) {
+            soloRemoteUrlField.setEnabled(false);
+            soloManualItemsArea.setEnabled(true);
+        } else {
+            soloRemoteUrlField.setEnabled(true);
+            soloManualItemsArea.setEnabled(false);
+        }
+        
+        // Refresh interval field for solo
+        int refreshIntervalSolo = Math.max(1, profileManager.getProfileRefreshInterval());
+        JSpinner soloRefreshIntervalSpinner = new JSpinner(new SpinnerNumberModel(refreshIntervalSolo, 1, 60, 1));
+        sc.gridx = 0;
+        sc.gridy = 5;
+        sc.gridwidth = 1;
+        soloPanel.add(new JLabel("Refresh Interval (minutes):"), sc);
+        sc.gridx = 1;
+        soloPanel.add(soloRefreshIntervalSpinner, sc);
+        
+        // Persist obtained checkbox for solo
+        JCheckBox soloPersistObtainedCheckBox = new JCheckBox("Save Progress", profileManager.getProfilePersistObtained());
+        sc.gridx = 0;
+        sc.gridy = 6;
+        sc.gridwidth = 2;
+        soloPanel.add(soloPersistObtainedCheckBox, sc);
+
         // Add panels to main panel (initially hidden)
         createTeamPanel.setVisible(false);
         joinTeamPanel.setVisible(false);
+        soloPanel.setVisible(true); // Solo panel is visible by default as solo is the default option
         
         c.gridx = 0;
         c.gridy = 2;
         c.gridwidth = 2;
-        panel.add(createTeamPanel, c);
+        panel.add(soloPanel, c);
         
         c.gridy = 3;
+        panel.add(createTeamPanel, c);
+        
+        c.gridy = 4;
         panel.add(joinTeamPanel, c);
         
         // Create a custom dialog with OK and Cancel buttons
@@ -1018,6 +1118,7 @@ public class BingoPanel extends PluginPanel {
         
         // Add listeners to show/hide panels based on selection
         soloRadio.addActionListener(e -> {
+            soloPanel.setVisible(true);
             createTeamPanel.setVisible(false);
             joinTeamPanel.setVisible(false);
             dialog.pack();
@@ -1026,6 +1127,7 @@ public class BingoPanel extends PluginPanel {
         });
         
         createTeamRadio.addActionListener(e -> {
+            soloPanel.setVisible(false);
             createTeamPanel.setVisible(true);
             joinTeamPanel.setVisible(false);
             dialog.pack();
@@ -1034,6 +1136,7 @@ public class BingoPanel extends PluginPanel {
         });
         
         joinTeamRadio.addActionListener(e -> {
+            soloPanel.setVisible(false);
             createTeamPanel.setVisible(false);
             joinTeamPanel.setVisible(true);
             dialog.pack();
@@ -1073,14 +1176,50 @@ public class BingoPanel extends PluginPanel {
             
             // Handle based on selected type
             if (soloRadio.isSelected()) {
-                // Create a solo profile
+                // Create a solo profile with settings
+                String webhook = soloWebhookField.getText().trim();
+                BingoConfig.ItemSourceType itemSourceType = (BingoConfig.ItemSourceType) soloItemSourceTypeComboBox.getSelectedItem();
+                String remoteUrl = soloRemoteUrlField.getText().trim();
+                String manualItems = soloManualItemsArea.getText().trim();
+                boolean persistObtained = soloPersistObtainedCheckBox.isSelected();
+                // Get the refresh interval directly from the spinner without re-declaring the variable
+                
                 if (profileManager.createProfile(profileName)) {
+                    log.info("Profile created: {}, now switching to it", profileName);
+                    
+                    // Add a small delay to ensure the profile creation completes
+                    try {
+                        Thread.sleep(200);
+                    } catch (InterruptedException ex) {
+                        Thread.currentThread().interrupt();
+                    }
+                    
                     // Switch to the selected profile
                     profileManager.switchProfile(profileName);
                     
-                    // Since switchProfile is void and runs asynchronously, we don't need thenAccept.
-                    // The UI update is already handled within switchProfile method.
-                    log.info("Profile change initiated to: {}", profileName);
+                    // Add a small delay to ensure the profile switch completes
+                    try {
+                        Thread.sleep(300);
+                    } catch (InterruptedException ex) {
+                        Thread.currentThread().interrupt();
+                    }
+                    
+                    // Then set the additional settings
+                    log.info("Setting profile settings for: {}", profileName);
+                    profileManager.setProfileDiscordWebhook(webhook);
+                    profileManager.setProfileItemSourceType(itemSourceType);
+                    profileManager.setProfileRemoteUrl(remoteUrl);
+                    profileManager.setProfileItemList(manualItems);
+                    profileManager.setProfileRefreshInterval((Integer)soloRefreshIntervalSpinner.getValue());
+                    profileManager.setProfilePersistObtained(persistObtained);
+                    
+                    log.info("Profile settings saved, now updating UI");
+                    
+                    // Force UI update to show the new profile in dropdown
+                    updateProfileComboBox();
+                    
+                    // Force reload of items to reflect the new profile
+                    plugin.forceReloadItems();
                 } else {
                     JOptionPane.showMessageDialog(this, "Failed to create profile: Profile already exists", "Error", JOptionPane.ERROR_MESSAGE);
                 }

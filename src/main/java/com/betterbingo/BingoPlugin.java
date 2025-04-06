@@ -376,8 +376,13 @@ public class BingoPlugin extends Plugin {
             try {
                 log.info("Initializing Bingo plugin in background");
                 
-                // Load items
+                // Load items without clearing existing obtained items
                 reloadItems();
+                
+                // Make sure we load saved obtained items from local config first
+                // This is critical to ensure we don't overwrite local state with remote state
+                loadSavedItems();
+                log.info("Loaded local saved items during startup");
                 
                 // Add the panel to the sidebar if enabled in config
                 if (config.showSidebar()) {
@@ -400,6 +405,18 @@ public class BingoPlugin extends Plugin {
                         
                         // Register a team listener to get updates
                         teamService.registerTeamListener(teamCode, this::updateItemsFromFirebase);
+                        
+                        // CRITICAL: Force a UI refresh from Firebase to ensure UI shows correct state
+                        // This is needed because the UI might not reflect what's in Firebase on startup
+                        clientThread.invokeLater(() -> {
+                            try {
+                                // Give Firebase a moment to connect
+                                Thread.sleep(2000);
+                                refreshUIFromFirebase();
+                            } catch (InterruptedException e) {
+                                log.error("Error during startup UI refresh", e);
+                            }
+                        });
                     }
                 }
                 
@@ -412,15 +429,18 @@ public class BingoPlugin extends Plugin {
                     }
                 });
                 
-                log.info("Bingo plugin initialized successfully in background");
+                log.info("Bingo plugin initialization completed");
             } catch (Exception e) {
-                log.error("Error initializing Bingo plugin in background", e);
+                log.error("Error during Bingo plugin initialization", e);
             }
         });
     }
 
     @Override
     protected void shutDown() {
+        // Save obtained items before shutting down
+        saveObtainedItems();
+        
         // Remove the panel from the sidebar
         if (clientToolbar != null && navButton != null) {
             clientToolbar.removeNavigation(navButton);
@@ -481,8 +501,12 @@ public class BingoPlugin extends Plugin {
     @Subscribe
     public void onGameStateChanged(GameStateChanged event) {
         if (event.getGameState() == GameState.LOGGING_IN) {
-            loadItems();
-            loadSavedItems();
+            clientThread.invokeLater(() -> {
+                log.debug("Game state changed to LOGGING_IN, loading items and saved state");
+                loadItems();
+                loadSavedItems();
+                updateUI(); // Ensure UI reflects the loaded state
+            });
         }
     }
 
@@ -640,10 +664,15 @@ public class BingoPlugin extends Plugin {
         // Try to find the item in our list
         BingoItem bingoItem = itemsByName.get(itemName.toLowerCase());
         if (bingoItem == null) {
-            // Try to find a partial match
+            // Try to find a partial match using more precise logic
             for (Map.Entry<String, BingoItem> entry : itemsByName.entrySet()) {
-                if (entry.getKey().contains(itemName.toLowerCase()) || itemName.toLowerCase().contains(entry.getKey())) {
+                // Only consider cases where the entry key contains the FULL item name, not vice versa
+                // This prevents "Hammer" from matching with "Dragon Warhammer"
+                if (entry.getKey().contains(itemName.toLowerCase()) && 
+                    (entry.getKey().startsWith(itemName.toLowerCase()) || 
+                     entry.getKey().contains(" " + itemName.toLowerCase()))) {
                     bingoItem = entry.getValue();
+                    log.debug("Partial match found: '{}' in '{}'", itemName, entry.getKey());
                     break;
                 }
             }
@@ -758,10 +787,23 @@ public class BingoPlugin extends Plugin {
                 return;
             }
 
-            // Create a map of existing items by name for preserving group information
+            // Create a map of existing items by name for preserving group information and obtained status
             Map<String, BingoItem> existingItemsByName = new HashMap<>();
             for (BingoItem item : items) {
                 existingItemsByName.put(item.getName().toLowerCase(), item);
+            }
+
+            // Get current obtained items from local config before clearing the list
+            // This helps preserve obtained status during client restart
+            String profileKey = currentProfile + "." + CONFIG_KEY_OBTAINED_ITEMS;
+            String savedItemsStr = configManager.getConfiguration(CONFIG_GROUP, profileKey);
+            Set<String> savedObtainedItems = new HashSet<>();
+            if (savedItemsStr != null && !savedItemsStr.isEmpty()) {
+                Arrays.stream(savedItemsStr.split(","))
+                    .map(String::trim)
+                    .filter(s -> !s.isEmpty())
+                    .forEach(savedObtainedItems::add);
+                log.debug("Found {} saved obtained items in config", savedObtainedItems.size());
             }
 
             // Clear existing items
@@ -770,14 +812,18 @@ public class BingoPlugin extends Plugin {
 
             // Add the updated items
             for (BingoItem item : updatedItems) {
+                // Check if the item was previously obtained in our config
+                boolean wasObtainedLocally = savedObtainedItems.contains(item.getName());
+                
                 // Preserve obtained status if the item already existed
                 BingoItem existingItem = existingItemsByName.get(item.getName().toLowerCase());
                 if (existingItem != null) {
                     // If the item was already obtained in our existing data, keep it that way
                     // Unless the updated item specifically marks it as not obtained (team state takes priority)
-                    if (existingItem.isObtained() && !item.isObtained()) {
+                    if ((existingItem.isObtained() || wasObtainedLocally) && !item.isObtained()) {
                         // Only apply the existing obtained status if we're using local persistence
                         if (!profileManager.getProfilePersistObtained()) {
+                            log.debug("Preserving obtained status for item: {}", item.getName());
                             item.setObtained(true);
                         }
                     }
@@ -786,6 +832,12 @@ public class BingoPlugin extends Plugin {
                     if (existingItem.isGroup() && !item.isGroup()) {
                         item.setGroup(true);
                         item.setAlternativeNames(existingItem.getAlternativeNames());
+                    }
+                } else if (wasObtainedLocally && !item.isObtained()) {
+                    // Item wasn't in memory but was in saved config
+                    if (!profileManager.getProfilePersistObtained()) {
+                        log.debug("Setting obtained=true for item from config: {}", item.getName());
+                        item.setObtained(true);
                     }
                 }
                 
@@ -1328,6 +1380,58 @@ public class BingoPlugin extends Plugin {
         if (profileManager.getProfileBingoMode() == BingoConfig.BingoMode.TEAM &&
                 profileManager.getProfilePersistObtained()) {
             log.debug("Not loading obtained items from config as this is a team profile with persistObtained enabled");
+            
+            // CRITICAL FIX: For team profiles, we still need to ensure Firebase state is properly reflected
+            // This ensures that if an item is obtained in Firebase, it's displayed correctly in the UI
+            String teamCode = profileManager.getProfileTeamCode();
+            if (teamCode != null && !teamCode.isEmpty()) {
+                log.info("Checking Firebase state to ensure UI reflects obtained items correctly");
+                teamService.getTeamData(teamCode)
+                    .thenAccept(teamData -> {
+                        if (teamData != null && teamData.containsKey("items")) {
+                            // The items might be stored as a Map or as a List in the response
+                            Object itemsObj = teamData.get("items");
+                            if (itemsObj instanceof Map) {
+                                @SuppressWarnings("unchecked")
+                                Map<String, Object> itemsMap = (Map<String, Object>) itemsObj;
+                                
+                                clientThread.invokeLater(() -> {
+                                    boolean updatedAnyItem = false;
+                                    
+                                    for (Map.Entry<String, Object> entry : itemsMap.entrySet()) {
+                                        if (entry.getValue() instanceof Map) {
+                                            @SuppressWarnings("unchecked")
+                                            Map<String, Object> itemData = (Map<String, Object>) entry.getValue();
+                                            
+                                            if (itemData.containsKey("obtained") && Boolean.TRUE.equals(itemData.get("obtained"))) {
+                                                // This item is marked as obtained in Firebase
+                                                String itemName = (String) itemData.getOrDefault("name", entry.getKey());
+                                                log.info("Found item obtained in Firebase but potentially not in UI: {}", itemName);
+                                                
+                                                // Find this item in our local list and mark it as obtained
+                                                BingoItem item = itemsByName.get(itemName.toLowerCase());
+                                                if (item != null && !item.isObtained()) {
+                                                    log.info("Updating local UI to show item {} as obtained", itemName);
+                                                    item.setObtained(true);
+                                                    updatedAnyItem = true;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    // If we updated any items, update the UI
+                                    if (updatedAnyItem) {
+                                        updateUI();
+                                    }
+                                });
+                            }
+                        }
+                    })
+                    .exceptionally(e -> {
+                        log.error("Error checking Firebase state", e);
+                        return null;
+                    });
+            }
             return;
         }
 
@@ -1352,6 +1456,15 @@ public class BingoPlugin extends Plugin {
         String savedItems = configManager.getConfiguration(CONFIG_GROUP, profileKey);
         if (savedItems == null || savedItems.isEmpty()) {
             log.debug("No saved items found for profile: {}", profileName);
+            
+            // CRITICAL FIX: For team profiles, check Firebase even if there's no local data
+            if (profileManager.getProfileBingoMode() == BingoConfig.BingoMode.TEAM) {
+                String teamCode = profileManager.getProfileTeamCode();
+                if (teamCode != null && !teamCode.isEmpty()) {
+                    log.info("No local data found, checking Firebase for team: {}", teamCode);
+                    loadSavedItems(); // This will trigger the Firebase check in team mode
+                }
+            }
             return;
         }
 
@@ -2138,5 +2251,85 @@ public class BingoPlugin extends Plugin {
         } catch (Exception e) {
             log.error("Error during force config update", e);
         }
+    }
+
+    /**
+     * Forces a refresh of the UI based on Firebase data.
+     * This is a safety mechanism to ensure the UI always reflects what's in Firebase.
+     */
+    public void refreshUIFromFirebase() {
+        // Only applicable for team profiles
+        if (profileManager.getProfileBingoMode() != BingoConfig.BingoMode.TEAM) {
+            return;
+        }
+        
+        String teamCode = profileManager.getProfileTeamCode();
+        if (teamCode == null || teamCode.isEmpty()) {
+            return;
+        }
+        
+        log.info("Forcing UI refresh from Firebase data for team: {}", teamCode);
+        
+        teamService.getTeamData(teamCode)
+            .thenAccept(teamData -> {
+                if (teamData == null || !teamData.containsKey("items")) {
+                    log.info("No items found in Firebase for team: {}", teamCode);
+                    return;
+                }
+                
+                // Get the items data
+                Object itemsObj = teamData.get("items");
+                if (!(itemsObj instanceof Map)) {
+                    log.info("Items data in unexpected format for team: {}", teamCode);
+                    return;
+                }
+                
+                @SuppressWarnings("unchecked")
+                Map<String, Object> itemsMap = (Map<String, Object>) itemsObj;
+                
+                clientThread.invokeLater(() -> {
+                    int updatedCount = 0;
+                    
+                    // Process each item in Firebase
+                    for (Map.Entry<String, Object> entry : itemsMap.entrySet()) {
+                        if (!(entry.getValue() instanceof Map)) {
+                            continue;
+                        }
+                        
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> itemData = (Map<String, Object>) entry.getValue();
+                        
+                        // Check if this item is obtained in Firebase
+                        boolean obtainedInFirebase = itemData.containsKey("obtained") && 
+                                                    Boolean.TRUE.equals(itemData.get("obtained"));
+                        
+                        // Get the item name
+                        String itemName = (String) itemData.getOrDefault("name", entry.getKey());
+                        
+                        // Find this item in our local list
+                        BingoItem localItem = itemsByName.get(itemName.toLowerCase());
+                        if (localItem != null) {
+                            // If Firebase says it's obtained but our UI doesn't, update the UI
+                            if (obtainedInFirebase && !localItem.isObtained()) {
+                                log.info("Syncing UI: Marking item {} as obtained based on Firebase", itemName);
+                                localItem.setObtained(true);
+                                updatedCount++;
+                            }
+                        }
+                    }
+                    
+                    // If we made any changes, update the UI
+                    if (updatedCount > 0) {
+                        log.info("Updated {} items in UI based on Firebase data", updatedCount);
+                        updateUI();
+                    } else {
+                        log.info("UI is already in sync with Firebase data");
+                    }
+                });
+            })
+            .exceptionally(e -> {
+                log.error("Error refreshing UI from Firebase", e);
+                return null;
+            });
     }
 }

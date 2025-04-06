@@ -287,63 +287,120 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
     public CompletableFuture<Boolean> updateTeamItems(String teamCode, List<BingoItem> items) {
         CompletableFuture<Boolean> future = new CompletableFuture<>();
         
-        // Create the items data
-        JsonObject itemsData = new JsonObject();
-        for (BingoItem item : items) {
-            JsonObject itemData = new JsonObject();
-            itemData.addProperty("name", item.getName());
-            itemData.addProperty("itemId", item.getItemId());
-            itemData.addProperty("obtained", item.isObtained());
-            itemData.addProperty("updatedAt", System.currentTimeMillis());
-            
-            // Add group info if applicable
-            if (item.isGroup()) {
-                itemData.addProperty("isGroup", true);
-                if (item.getAlternativeNames() != null && !item.getAlternativeNames().isEmpty()) {
-                    JsonArray alternativeNames = new JsonArray();
-                    for (String altName : item.getAlternativeNames()) {
-                        alternativeNames.add(altName);
+        // CRITICAL FIX: First check the current state in Firebase to avoid overwriting obtained=true
+        // This is needed because this method replaces ALL items at once
+        getTeamData(teamCode).thenCompose(currentData -> {
+            try {
+                // Extract current items from team data
+                Map<String, Boolean> currentObtainedStatus = new HashMap<>();
+                if (currentData != null && currentData.containsKey("items")) {
+                    // The items might be stored as a Map or as a List, depending on the response format
+                    Object itemsObj = currentData.get("items");
+                    if (itemsObj instanceof Map) {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> itemsMap = (Map<String, Object>) itemsObj;
+                        for (Map.Entry<String, Object> entry : itemsMap.entrySet()) {
+                            if (entry.getValue() instanceof Map) {
+                                @SuppressWarnings("unchecked")
+                                Map<String, Object> itemData = (Map<String, Object>) entry.getValue();
+                                if (itemData.containsKey("obtained") && Boolean.TRUE.equals(itemData.get("obtained"))) {
+                                    // This item was previously obtained
+                                    String itemName = (String) itemData.getOrDefault("name", entry.getKey());
+                                    currentObtainedStatus.put(itemName.toLowerCase(), true);
+                                    log.debug("Found previously obtained item in Firebase: {}", itemName);
+                                }
+                            }
+                        }
                     }
-                    itemData.add("alternativeNames", alternativeNames);
                 }
-            }
-            
-            // Sanitize the item name for use as a key
-            String safeKey = sanitizeKey(item.getName());
-            itemsData.add(safeKey, itemData);
-        }
-        
-        // Send the request to the API
-        Request request = new Request.Builder()
-            .url(API_ENDPOINT + "/teams/" + teamCode + "/items")
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .put(RequestBody.create(MediaType.parse("application/json"), gson.toJson(itemsData)))
-            .build();
-        
-        log.debug("Sending team items update to API: {}", gson.toJson(itemsData));
-        
-        httpClient.newCall(request).enqueue(new Callback() {
-            @Override
-            public void onFailure(Call call, IOException e) {
-                log.error("Failed to update team items", e);
-                future.complete(false);
-            }
-            
-            @Override
-            public void onResponse(Call call, Response response) throws IOException {
-                try (ResponseBody responseBody = response.body()) {
-                    if (response.isSuccessful() && responseBody != null) {
-                        log.info("Successfully updated team items for team {}", teamCode);
-                        future.complete(true);
+                
+                // Create the items data
+                JsonObject itemsData = new JsonObject();
+                boolean madeChanges = false;
+                
+                for (BingoItem item : items) {
+                    JsonObject itemData = new JsonObject();
+                    itemData.addProperty("name", item.getName());
+                    itemData.addProperty("itemId", item.getItemId());
+                    
+                    // CRITICAL: Preserve obtained=true status for any item that was previously obtained
+                    boolean wasObtainedInFirebase = currentObtainedStatus.getOrDefault(item.getName().toLowerCase(), false);
+                    if (wasObtainedInFirebase && !item.isObtained()) {
+                        log.info("PRESERVING obtained status for {} in Firebase during team update", item.getName());
+                        itemData.addProperty("obtained", true);
+                        madeChanges = true;
                     } else {
-                        String errorMessage = responseBody != null ? responseBody.string() : "Unknown error";
-                        log.error("Failed to update team items: {}", errorMessage);
-                        future.complete(false);
+                        itemData.addProperty("obtained", item.isObtained());
                     }
+                    
+                    itemData.addProperty("updatedAt", System.currentTimeMillis());
+                    
+                    // Add group info if applicable
+                    if (item.isGroup()) {
+                        itemData.addProperty("isGroup", true);
+                        if (item.getAlternativeNames() != null && !item.getAlternativeNames().isEmpty()) {
+                            JsonArray alternativeNames = new JsonArray();
+                            for (String altName : item.getAlternativeNames()) {
+                                alternativeNames.add(altName);
+                            }
+                            itemData.add("alternativeNames", alternativeNames);
+                        }
+                    }
+                    
+                    // Sanitize the item name for use as a key
+                    String safeKey = sanitizeKey(item.getName());
+                    itemsData.add(safeKey, itemData);
                 }
+                
+                if (madeChanges) {
+                    log.info("Updated obtained status for some items before sending to Firebase");
+                }
+                
+                // Send the request to the API
+                Request request = new Request.Builder()
+                    .url(API_ENDPOINT + "/teams/" + teamCode + "/items")
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json")
+                    .put(RequestBody.create(MediaType.parse("application/json"), gson.toJson(itemsData)))
+                    .build();
+                
+                log.debug("Sending team items update to API: {}", gson.toJson(itemsData));
+                
+                CompletableFuture<Boolean> putFuture = new CompletableFuture<>();
+                
+                httpClient.newCall(request).enqueue(new Callback() {
+                    @Override
+                    public void onFailure(Call call, IOException e) {
+                        log.error("Failed to update team items", e);
+                        putFuture.complete(false);
+                    }
+                    
+                    @Override
+                    public void onResponse(Call call, Response response) throws IOException {
+                        try (ResponseBody responseBody = response.body()) {
+                            if (response.isSuccessful() && responseBody != null) {
+                                log.info("Successfully updated team items for team {}", teamCode);
+                                putFuture.complete(true);
+                            } else {
+                                String errorMessage = responseBody != null ? responseBody.string() : "Unknown error";
+                                log.error("Failed to update team items: {}", errorMessage);
+                                putFuture.complete(false);
+                            }
+                        }
+                    }
+                });
+                
+                return putFuture;
+            } catch (Exception e) {
+                log.error("Error preparing team items update", e);
+                return CompletableFuture.completedFuture(false);
             }
-        });
+        }).thenAccept(future::complete)
+          .exceptionally(e -> {
+              log.error("Exception during getTeamData", e);
+              future.complete(false);
+              return null;
+          });
         
         return future;
     }

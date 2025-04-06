@@ -990,7 +990,19 @@ public class BingoProfileManager {
         try {
             return BingoConfig.ItemSourceType.valueOf(itemSourceType);
         } catch (IllegalArgumentException e) {
-            // If the stored value is invalid, use the default
+            // If valueOf fails, the value might be a toString() result (e.g., "Manual Input", "Remote URL")
+            for (BingoConfig.ItemSourceType sourceType : BingoConfig.ItemSourceType.values()) {
+                if (sourceType.toString().equals(itemSourceType)) {
+                    // If we find a match, update the stored value to use the enum name
+                    log.info("[getProfileItemSourceType] Converting stored value '{}' to enum name '{}'", 
+                            itemSourceType, sourceType.name());
+                    setProfileItemSourceType(sourceType);
+                    return sourceType;
+                }
+            }
+            
+            // If the stored value is invalid and no match found, use the default
+            log.warn("[getProfileItemSourceType] Invalid source type value '{}'. Returning default MANUAL.", itemSourceType);
             BingoConfig.ItemSourceType sourceType = config.itemSourceType();
             setProfileItemSourceType(sourceType);
             return sourceType;
@@ -1005,7 +1017,7 @@ public class BingoProfileManager {
     public void setProfileItemSourceType(BingoConfig.ItemSourceType itemSourceType) {
         String currentProfile = config.currentProfile();
         if (currentProfile == null || currentProfile.isEmpty()) return;
-        setProfileKey(currentProfile, CONFIG_KEY_ITEM_SOURCE_TYPE, itemSourceType.toString());
+        setProfileKey(currentProfile, CONFIG_KEY_ITEM_SOURCE_TYPE, itemSourceType.name());
     }
 
     /**
@@ -1266,7 +1278,7 @@ public class BingoProfileManager {
         
         // Force a small delay to ensure config change is processed
         try {
-            Thread.sleep(50);
+            Thread.sleep(100); // Increase delay for more reliable config writes
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
@@ -1283,14 +1295,14 @@ public class BingoProfileManager {
                 // Try disabling and re-enabling the config setting
                 configManager.unsetConfiguration(group, key);
                 try {
-                    Thread.sleep(50);
+                    Thread.sleep(100); // Increase delay for more reliable config writes
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
                 
                 configManager.setConfiguration(group, key, value);
                 try {
-                    Thread.sleep(50);
+                    Thread.sleep(100); // Increase delay for more reliable config writes
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }

@@ -209,7 +209,7 @@ public interface BingoConfig extends Config
     )
     default int refreshInterval()
     {
-        return 0;
+        return 900;
     }
 
     @ConfigItem(

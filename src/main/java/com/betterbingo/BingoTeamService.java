@@ -34,8 +34,8 @@ import java.time.temporal.ChronoUnit;
 @Singleton
 public class BingoTeamService {
 
-    // Default to 15 seconds - increased from 5 as a better default
-    private static final int DEFAULT_SYNC_INTERVAL_SECONDS = 15;
+    // Default to 15 minutes (900 seconds) - increased significantly to reduce API requests
+    private static final int DEFAULT_SYNC_INTERVAL_SECONDS = 900;
     
     // Fixed cache expiration time of 48 hours (2 days)
     private static final int CACHE_EXPIRATION_HOURS = 48;
@@ -51,6 +51,9 @@ public class BingoTeamService {
     private final TeamStorageFactory storageFactory;
     private final FirebaseTeamStorage teamStorage;
     private final net.runelite.client.config.ConfigManager configManager;
+    
+    // Flag to prevent Firebase updates during initial load
+    private final Map<String, Boolean> initialLoadingTeams = new ConcurrentHashMap<>();
 
     @Inject
     private BingoConfig config;
@@ -193,6 +196,23 @@ public class BingoTeamService {
      * @return A CompletableFuture that resolves to a boolean indicating success
      */
     public CompletableFuture<Boolean> updateItemObtained(String teamCode, String itemName, boolean obtained) {
+        // Skip updating Firebase during initial loading to prevent overwriting remote state
+        if (initialLoadingTeams.getOrDefault(teamCode, false)) {
+            log.info("Skipping Firebase update for {} during initial load", itemName);
+            CompletableFuture<Boolean> future = new CompletableFuture<>();
+            future.complete(true); // Pretend it succeeded
+            return future;
+        }
+        
+        // CRITICAL FIX: Never allow "false" updates to Firebase for obtained items
+        // This ensures that once an item is obtained, it can never be unmarked accidentally
+        if (!obtained) {
+            log.info("Blocking attempt to set item {} to obtained=false in Firebase", itemName);
+            CompletableFuture<Boolean> future = new CompletableFuture<>();
+            future.complete(true); // Pretend it succeeded
+            return future;
+        }
+        
         return teamStorage.updateItemObtained(teamCode, itemName, obtained)
             .thenApply(success -> {
                 if (success) {
@@ -234,7 +254,51 @@ public class BingoTeamService {
      * @return A CompletableFuture containing a boolean indicating success
      */
     public CompletableFuture<Boolean> updateTeamItems(String teamCode, List<BingoItem> items) {
-        return teamStorage.updateTeamItems(teamCode, items)
+        // Skip massive updates during initial loading
+        if (initialLoadingTeams.getOrDefault(teamCode, false)) {
+            log.info("Skipping team items update for {} during initial load (protecting {} items)", teamCode, items.size());
+            CompletableFuture<Boolean> future = new CompletableFuture<>();
+            future.complete(true); // Pretend it succeeded
+            return future;
+        }
+        
+        // CRITICAL: We need to first fetch the current items to prevent overwriting obtained status
+        // This is necessary because updateTeamItems replaces ALL items
+        return teamStorage.getTeamData(teamCode)
+            .thenCompose(teamData -> {
+                if (teamData != null) {
+                    TeamData team = TeamData.fromMap(teamData);
+                    if (team != null && team.getItems() != null && !team.getItems().isEmpty()) {
+                        // Create a map of existing item obtained status
+                        Map<String, Boolean> existingObtainedStatus = new HashMap<>();
+                        for (BingoItem existingItem : team.getItems()) {
+                            if (existingItem.isObtained()) {
+                                existingObtainedStatus.put(existingItem.getName().toLowerCase(), true);
+                            }
+                        }
+                        
+                        // Check if any items would have their obtained status overwritten
+                        boolean foundChanges = false;
+                        for (BingoItem item : items) {
+                            Boolean wasObtained = existingObtainedStatus.get(item.getName().toLowerCase());
+                            if (wasObtained != null && wasObtained && !item.isObtained()) {
+                                // This item was previously obtained but is now being set to not obtained
+                                // Preserve the obtained status
+                                log.info("Preserving obtained status for {} during team items update", item.getName());
+                                item.setObtained(true);
+                                foundChanges = true;
+                            }
+                        }
+                        
+                        if (foundChanges) {
+                            log.info("Protected obtained status for some items during team update");
+                        }
+                    }
+                }
+                
+                // Now proceed with the update
+                return teamStorage.updateTeamItems(teamCode, items);
+            })
             .thenApply(success -> {
                 if (success) {
                     log.info("Successfully updated items for team {}", teamCode);
@@ -264,6 +328,10 @@ public class BingoTeamService {
             unregisterTeamListener(teamCode);
         }
 
+        // Mark this team as in initial loading state to prevent Firebase updates
+        initialLoadingTeams.put(teamCode, true);
+        log.debug("Team {} marked as in initial loading state", teamCode);
+
         teamListeners.put(teamCode, listener);
         CompletableFuture<Void> future = new CompletableFuture<>();
 
@@ -282,6 +350,7 @@ public class BingoTeamService {
                 if (teamData != null) {
                     // Check again if listener is still registered (in case of rapid profile switches)
                     if (!teamListeners.containsKey(teamCode)) {
+                        initialLoadingTeams.remove(teamCode); // Clear the loading flag
                         future.complete(null);
                         return;
                     }
@@ -304,7 +373,7 @@ public class BingoTeamService {
                         }
                     }
                     updateLocalCache(teamCode, jsonObject);
-
+                    
                     // Notify listener with initial items - only use if we have items
                     if (teamItemsCache.containsKey(teamCode)) {
                         List<BingoItem> items = teamItemsCache.get(teamCode);
@@ -333,57 +402,77 @@ public class BingoTeamService {
                         // Then fetch items from remote URL
                         fetchItemsFromRemoteUrl(remoteUrl, teamCode)
                             .thenAccept(remoteItems -> {
-                                // Only proceed if listener is still registered and hasn't changed
-                                if (!teamListeners.containsKey(teamCode) || teamListeners.get(teamCode) != listener) {
-                                    return;
-                                }
-
-                                if (remoteItems != null && !remoteItems.isEmpty()) {
-                                    log.info("Initial remote URL fetch completed for team {} with {} items", teamCode, remoteItems.size());
-
-                                    // Update the cache - safely
-                                    List<BingoItem> updatedItems = safelyUpdateCache(teamCode, remoteItems);
-
-                                    // Notify the listener with the items that were actually stored
-                                    listener.accept(new ArrayList<>(updatedItems));
-
-                                    // Update the storage
-                                    updateTeamItems(teamCode, updatedItems)
-                                        .thenAccept(success -> {
-                                            if (success) {
-                                                log.info("Successfully updated items for team {}", teamCode);
-                                            } else {
-                                                log.warn("Failed to update items for team {}", teamCode);
-                                            }
-                                        })
-                                        .exceptionally(ex -> {
-                                            log.error("Error updating items for team {}: {}", teamCode, ex.getMessage(), ex);
-                                            return null;
-                                        });
-                                } else {
-                                    log.warn("Remote URL fetch completed but no items were found for team {}", teamCode);
-                                    // Check if we have cached items we can use instead
-                                    List<BingoItem> existingItems = teamItemsCache.get(teamCode);
-                                    if (existingItems != null && !existingItems.isEmpty()) {
-                                        listener.accept(new ArrayList<>(existingItems));
+                                try {
+                                    // Only proceed if listener is still registered and hasn't changed
+                                    if (!teamListeners.containsKey(teamCode) || teamListeners.get(teamCode) != listener) {
+                                        initialLoadingTeams.remove(teamCode); // Clear the loading flag
+                                        return;
                                     }
+
+                                    if (remoteItems != null && !remoteItems.isEmpty()) {
+                                        log.info("Initial remote URL fetch completed for team {} with {} items", teamCode, remoteItems.size());
+
+                                        // Update the cache - safely
+                                        List<BingoItem> updatedItems = safelyUpdateCache(teamCode, remoteItems);
+
+                                        // Notify the listener with the items that were actually stored
+                                        listener.accept(new ArrayList<>(updatedItems));
+
+                                        // Update the storage
+                                        updateTeamItems(teamCode, updatedItems)
+                                            .thenAccept(success -> {
+                                                if (success) {
+                                                    log.info("Successfully updated items for team {}", teamCode);
+                                                } else {
+                                                    log.warn("Failed to update items for team {}", teamCode);
+                                                }
+                                                // Clear the initial loading flag now that everything is complete
+                                                initialLoadingTeams.remove(teamCode);
+                                                log.debug("Team {} initial loading completed after URL fetch", teamCode);
+                                            })
+                                            .exceptionally(ex -> {
+                                                log.error("Error updating items for team {}: {}", teamCode, ex.getMessage(), ex);
+                                                initialLoadingTeams.remove(teamCode); // Clear the loading flag even on error
+                                                return null;
+                                            });
+                                    } else {
+                                        log.warn("Remote URL fetch completed but no items were found for team {}", teamCode);
+                                        // Check if we have cached items we can use instead
+                                        List<BingoItem> existingItems = teamItemsCache.get(teamCode);
+                                        if (existingItems != null && !existingItems.isEmpty()) {
+                                            listener.accept(new ArrayList<>(existingItems));
+                                        }
+                                        // Clear the initial loading flag
+                                        initialLoadingTeams.remove(teamCode);
+                                        log.debug("Team {} initial loading completed with empty URL result", teamCode);
+                                    }
+                                } catch (Exception e) {
+                                    log.error("Error during remote URL item processing", e);
+                                    initialLoadingTeams.remove(teamCode); // Make sure flag is cleared even on exception
                                 }
                             })
                             .exceptionally(ex -> {
                                 log.error("Error fetching items from remote URL for team {}: {}", teamCode, ex.getMessage(), ex);
+                                initialLoadingTeams.remove(teamCode); // Clear the loading flag on error
                                 return null;
                             });
+                    } else {
+                        // No remote URL, so we're done with initial loading
+                        initialLoadingTeams.remove(teamCode);
+                        log.debug("Team {} initial loading completed (no remote URL)", teamCode);
                     }
-
+                    
                     future.complete(null);
                 } else {
                     log.error("Failed to get team data for team {}", teamCode);
+                    initialLoadingTeams.remove(teamCode); // Clear the loading flag on error
                     future.completeExceptionally(new RuntimeException("Failed to get team data for team " + teamCode));
                 }
             })
             .exceptionally(ex -> {
                 log.error("Error registering team listener: {}", ex.getMessage(), ex);
                 teamListeners.remove(teamCode);
+                initialLoadingTeams.remove(teamCode); // Clear the loading flag on error
                 future.completeExceptionally(ex);
                 return null;
             });
@@ -397,22 +486,40 @@ public class BingoTeamService {
      * @param teamCode The team code
      */
     public void unregisterTeamListener(String teamCode) {
-        log.info("Unregistering listener for team: {}", teamCode);
-
-        // Remove the listener but KEEP the cache
-        teamListeners.remove(teamCode);
-
-        // Update last access time when unregistering to track when it was last used
-        updateCacheAccessTime(teamCode);
-
-        // Cancel any active requests for this team's URLs
-        for (Iterator<Map.Entry<String, CompletableFuture<List<BingoItem>>>> it = activeRemoteUrlRequests.entrySet().iterator(); it.hasNext();) {
-            Map.Entry<String, CompletableFuture<List<BingoItem>>> entry = it.next();
-            if (entry.getKey().startsWith(teamCode + ":")) {
-                log.info("Cancelling active request for URL associated with team: {}", teamCode);
-                entry.getValue().complete(new ArrayList<>());  // Complete with empty list to avoid hanging
-                it.remove();
+        if (teamListeners.containsKey(teamCode)) {
+            log.info("Unregistering listener for team: {}", teamCode);
+ 
+            // Remove the listener but KEEP the cache
+            teamListeners.remove(teamCode);
+            
+            // Also clear the initial loading flag
+            initialLoadingTeams.remove(teamCode);
+            
+            // Update last access time when unregistering to track when it was last used
+            updateCacheAccessTime(teamCode);
+ 
+            // Cancel any active requests for this team's URLs
+            for (Iterator<Map.Entry<String, CompletableFuture<List<BingoItem>>>> it = activeRemoteUrlRequests.entrySet().iterator(); it.hasNext();) {
+                Map.Entry<String, CompletableFuture<List<BingoItem>>> entry = it.next();
+                if (entry.getKey().startsWith(teamCode + ":")) {
+                    log.info("Cancelling active request for URL associated with team: {}", teamCode);
+                    entry.getValue().complete(new ArrayList<>());  // Complete with empty list to avoid hanging
+                    it.remove();
+                }
             }
+        }
+    }
+    
+    /**
+     * Clears the initial loading flag for a team.
+     * Used when we want to allow Firebase updates again.
+     *
+     * @param teamCode The team code
+     */
+    public void clearInitialLoadingFlag(String teamCode) {
+        if (initialLoadingTeams.containsKey(teamCode) && initialLoadingTeams.get(teamCode)) {
+            log.debug("Manually clearing initial loading flag for team: {}", teamCode);
+            initialLoadingTeams.remove(teamCode);
         }
     }
 
