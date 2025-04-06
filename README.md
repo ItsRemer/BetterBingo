@@ -15,8 +15,6 @@ We've added a team system that allows players to collaborate on bingo events:
 - **Item Importing**: Automatically import the team leader's bingo items when joining a team
 - **Profile Integration**: Team settings are stored with each profile, allowing participation in multiple teams
 
-For more details, see [TEAM_SYSTEM.md](TEAM_SYSTEM.md).
-
 ### Profile System Improvements
 
 We've made several important improvements to the profile system:
@@ -83,7 +81,7 @@ When creating a new profile, you can set it up as a team profile:
 
 ### Using Teams
 
-Items obtained by team members will be displayed in blue on your bingo board.
+Items obtained by team members will be displayed in green on your bingo board.
 
 ## Anti-Cheat System
 
@@ -125,7 +123,6 @@ The plugin has undergone significant refactoring to improve code organization an
 - **Current Profile**: Select which profile to use
 - **Profiles**: Create, delete, and manage multiple bingo profiles
 - **Team Features**: Enable team collaboration for bingo events
-- **I am the Team Leader**: Check this if you are creating a new team
 - **Team Code**: Enter a team code to join an existing team
 - **Team Name**: Set a name for your team
 - **Share Items with Team**: When enabled, items you obtain will be shared with your team

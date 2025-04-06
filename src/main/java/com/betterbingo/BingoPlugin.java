@@ -240,106 +240,13 @@ public class BingoPlugin extends Plugin {
     }
 
     /**
-     * Represents a pattern for matching chat messages related to item drops
-     */
-    private static class ChatMessagePattern {
-        private final String pattern;
-        private final Function<String, String> itemExtractor;
-        @Getter
-        private final boolean multiItem;
-
-        public ChatMessagePattern(String pattern, Function<String, String> itemExtractor, boolean multiItem) {
-            this.pattern = pattern;
-            this.itemExtractor = itemExtractor;
-            this.multiItem = multiItem;
-        }
-
-        public boolean matches(String message) {
-            return message.contains(pattern);
-        }
-
-        public String extractItem(String message) {
-            return itemExtractor.apply(message);
-        }
-    }
-
-    private final List<ChatMessagePattern> chatPatterns = Arrays.asList(
-            // Regular drops
-            new ChatMessagePattern("Valuable drop:",
-                    message -> message.substring(message.indexOf(":") + 2), false),
-            new ChatMessagePattern("You receive a drop:",
-                    message -> message.substring(message.indexOf(":") + 2), false),
-
-            // Pet drops
-            new ChatMessagePattern("You have a funny feeling like",
-                    message -> message.substring(0, message.indexOf("like you") - 1)
-                            .replace("You have a funny feeling ", ""), false),
-
-            // Collection log
-            new ChatMessagePattern("New item added to your collection log:",
-                    message -> message.substring(message.indexOf(":") + 2), false),
-
-            // Raids drops with specific format
-            new ChatMessagePattern("- ",
-                    message -> {
-                        if (message.contains("Chambers of Xeric") ||
-                                message.contains("Theatre of Blood") ||
-                                message.contains("Tombs of Amascut")) {
-                            return message.substring(message.indexOf("- ") + 2);
-                        }
-                        return null;
-                    }, false),
-
-            // Special raid loot messages
-            new ChatMessagePattern("Special loot:",
-                    message -> message.substring(message.indexOf(":") + 2), true),
-
-            // Chest opening messages
-            new ChatMessagePattern("You open the chest and find:",
-                    message -> message.substring(message.indexOf("find:") + 6), true),
-            new ChatMessagePattern("You find some loot:",
-                    message -> message.substring(message.indexOf("loot:") + 6), true),
-            new ChatMessagePattern("Your loot is:",
-                    message -> message.substring(message.indexOf("is:") + 4), true),
-
-            // Special drop notifications
-            new ChatMessagePattern("received a special drop:",
-                    message -> message.substring(message.indexOf("drop:") + 6), false),
-            new ChatMessagePattern("received unique loot:",
-                    message -> message.substring(message.indexOf("loot:") + 6), false)
-    );
-
-    /**
      * Extracts an item name from a string, handling quantity indicators and special cases
      *
      * @param rawItemName The raw item name to clean
      * @return The cleaned item name or null if invalid
      */
     private String cleanItemName(String rawItemName) {
-        if (rawItemName == null || rawItemName.trim().isEmpty()) {
-            return null;
-        }
-
-        String itemName = rawItemName.trim();
-
-        // Handle "x quantity" format (e.g., "5 x Bones")
-        if (itemName.contains(" x ")) {
-            if (itemName.indexOf("x ") > 0) {
-                itemName = itemName.substring(itemName.indexOf("x ") + 2).trim();
-            }
-        }
-
-        // Handle "quantity x" format (e.g., "5x Bones")
-        if (itemName.matches(".*\\d+x .*")) {
-            itemName = itemName.replaceAll("\\d+x ", "").trim();
-        }
-
-        // Handle "Item (quantity)" format (e.g., "Bones (5)")
-        if (itemName.matches(".*\\(\\d+\\)$")) {
-            itemName = itemName.replaceAll("\\s*\\(\\d+\\)$", "").trim();
-        }
-
-        return itemName;
+        return BingoChatPatterns.cleanItemName(rawItemName);
     }
 
     @Override
@@ -540,7 +447,7 @@ public class BingoPlugin extends Plugin {
         String message = event.getMessage();
         String location = antiCheat.getPlayerLocationName();
 
-        for (ChatMessagePattern pattern : chatPatterns) {
+        for (BingoChatPatterns.ChatMessagePattern pattern : BingoChatPatterns.CHAT_PATTERNS) {
             if (pattern.matches(message)) {
                 String extractedText = pattern.extractItem(message);
 
