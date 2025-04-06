@@ -4,7 +4,6 @@ import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
-import com.google.gson.JsonPrimitive;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.*;
 
@@ -17,10 +16,8 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
-import java.util.stream.Collectors;
 import java.util.Iterator;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
+
 import com.google.gson.stream.JsonReader;
 import java.io.StringReader;
 import java.time.Instant;
@@ -34,9 +31,6 @@ import java.time.temporal.ChronoUnit;
 @Singleton
 public class BingoTeamService {
 
-    // Default to 15 minutes (900 seconds) - increased significantly to reduce API requests
-    private static final int DEFAULT_SYNC_INTERVAL_SECONDS = 900;
-    
     // Fixed cache expiration time of 48 hours (2 days)
     private static final int CACHE_EXPIRATION_HOURS = 48;
 
@@ -89,9 +83,6 @@ public class BingoTeamService {
      */
     private void cleanupOldCaches() {
         try {
-            log.debug("Running cache cleanup task");
-            int expiredCacheCount = 0;
-
             // Get current time
             Instant now = Instant.now();
 
@@ -109,19 +100,13 @@ public class BingoTeamService {
 
                     // Check if last access time exceeds our fixed 48-hour threshold
                     if (lastAccessed.isBefore(now.minus(CACHE_EXPIRATION_HOURS, ChronoUnit.HOURS))) {
-                        log.debug("Removing expired cache for team {} (last accessed: {})", teamCode, lastAccessed);
                         teamItemsCache.remove(teamCode);
                         it.remove();
-                        expiredCacheCount++;
                     }
                 }
             }
-
-            if (expiredCacheCount > 0) {
-                log.info("Cleaned up {} expired team caches", expiredCacheCount);
-            }
         } catch (Exception e) {
-            log.error("Error during cache cleanup", e);
+            // Exception during cache cleanup
         }
     }
 
@@ -155,14 +140,8 @@ public class BingoTeamService {
                                                String remoteUrl, String manualItems,
                                                int refreshInterval, boolean persistObtained) {
         return teamStorage.createTeam(teamName, discordWebhook, itemSourceType, remoteUrl, manualItems, refreshInterval, persistObtained)
-            .thenApply(teamCode -> {
-                log.info("Team created successfully with code: {}", teamCode);
-                return teamCode;
-            })
-            .exceptionally(e -> {
-                log.error("Failed to create team", e);
-                return null;
-            });
+            .thenApply(teamCode -> teamCode)
+            .exceptionally(e -> null);
     }
 
     /**
@@ -173,18 +152,8 @@ public class BingoTeamService {
      */
     public CompletableFuture<Boolean> joinTeam(String teamCode) {
         return teamStorage.joinTeam(teamCode)
-            .thenApply(success -> {
-                if (success) {
-                    log.info("Successfully joined team with code: {}", teamCode);
-                } else {
-                    log.warn("Failed to join team with code: {}", teamCode);
-                }
-                return success;
-            })
-            .exceptionally(e -> {
-                log.error("Error joining team with code: {}", teamCode, e);
-                return false;
-            });
+            .thenApply(success -> success)
+            .exceptionally(e -> false);
     }
 
     /**
@@ -196,36 +165,22 @@ public class BingoTeamService {
      * @return A CompletableFuture that resolves to a boolean indicating success
      */
     public CompletableFuture<Boolean> updateItemObtained(String teamCode, String itemName, boolean obtained) {
-        // Skip updating Firebase during initial loading to prevent overwriting remote state
         if (initialLoadingTeams.getOrDefault(teamCode, false)) {
-            log.info("Skipping Firebase update for {} during initial load", itemName);
             CompletableFuture<Boolean> future = new CompletableFuture<>();
-            future.complete(true); // Pretend it succeeded
+            future.complete(true);
             return future;
         }
-        
-        // CRITICAL FIX: Never allow "false" updates to Firebase for obtained items
+
         // This ensures that once an item is obtained, it can never be unmarked accidentally
         if (!obtained) {
-            log.info("Blocking attempt to set item {} to obtained=false in Firebase", itemName);
             CompletableFuture<Boolean> future = new CompletableFuture<>();
-            future.complete(true); // Pretend it succeeded
+            future.complete(true);
             return future;
         }
         
         return teamStorage.updateItemObtained(teamCode, itemName, obtained)
-            .thenApply(success -> {
-                if (success) {
-                    log.info("Successfully updated item {} for team {}: obtained = {}", itemName, teamCode, obtained);
-                } else {
-                    log.warn("Failed to update item {} for team {}: obtained = {}", itemName, teamCode, obtained);
-                }
-                return success;
-            })
-            .exceptionally(e -> {
-                log.error("Error updating item {} for team {}: obtained = {}", itemName, teamCode, obtained, e);
-                return false;
-            });
+            .thenApply(success -> success)
+            .exceptionally(e -> false);
     }
 
     /**
@@ -236,14 +191,8 @@ public class BingoTeamService {
      */
     public CompletableFuture<Map<String, Object>> getTeamData(String teamCode) {
         return teamStorage.getTeamData(teamCode)
-            .thenApply(teamData -> {
-                log.info("Successfully retrieved team data for team {}", teamCode);
-                return teamData;
-            })
-            .exceptionally(e -> {
-                log.error("Error retrieving team data for team {}", teamCode, e);
-                return null;
-            });
+            .thenApply(teamData -> teamData)
+            .exceptionally(e -> null);
     }
 
     /**
@@ -256,13 +205,11 @@ public class BingoTeamService {
     public CompletableFuture<Boolean> updateTeamItems(String teamCode, List<BingoItem> items) {
         // Skip massive updates during initial loading
         if (initialLoadingTeams.getOrDefault(teamCode, false)) {
-            log.info("Skipping team items update for {} during initial load (protecting {} items)", teamCode, items.size());
             CompletableFuture<Boolean> future = new CompletableFuture<>();
-            future.complete(true); // Pretend it succeeded
+            future.complete(true);
             return future;
         }
-        
-        // CRITICAL: We need to first fetch the current items to prevent overwriting obtained status
+
         // This is necessary because updateTeamItems replaces ALL items
         return teamStorage.getTeamData(teamCode)
             .thenCompose(teamData -> {
@@ -282,16 +229,12 @@ public class BingoTeamService {
                         for (BingoItem item : items) {
                             Boolean wasObtained = existingObtainedStatus.get(item.getName().toLowerCase());
                             if (wasObtained != null && wasObtained && !item.isObtained()) {
-                                // This item was previously obtained but is now being set to not obtained
-                                // Preserve the obtained status
-                                log.info("Preserving obtained status for {} during team items update", item.getName());
                                 item.setObtained(true);
                                 foundChanges = true;
                             }
                         }
-                        
                         if (foundChanges) {
-                            log.info("Protected obtained status for some items during team update");
+                            // Protected obtained status for some items during team update
                         }
                     }
                 }
@@ -299,18 +242,8 @@ public class BingoTeamService {
                 // Now proceed with the update
                 return teamStorage.updateTeamItems(teamCode, items);
             })
-            .thenApply(success -> {
-                if (success) {
-                    log.info("Successfully updated items for team {}", teamCode);
-                } else {
-                    log.warn("Failed to update items for team {}", teamCode);
-                }
-                return success;
-            })
-            .exceptionally(e -> {
-                log.error("Error updating items for team {}", teamCode, e);
-                return false;
-            });
+            .thenApply(success -> success)
+            .exceptionally(e -> false);
     }
 
     /**
@@ -321,16 +254,12 @@ public class BingoTeamService {
      * @return A CompletableFuture that completes when initial data is fetched
      */
     public CompletableFuture<Void> registerTeamListener(String teamCode, Consumer<List<BingoItem>> listener) {
-        log.info("Registering listener for team: {}", teamCode);
-
-        // Important: If we're switching profiles rapidly, unregister any previous listener with this code
         if (teamListeners.containsKey(teamCode)) {
             unregisterTeamListener(teamCode);
         }
 
         // Mark this team as in initial loading state to prevent Firebase updates
         initialLoadingTeams.put(teamCode, true);
-        log.debug("Team {} marked as in initial loading state", teamCode);
 
         teamListeners.put(teamCode, listener);
         CompletableFuture<Void> future = new CompletableFuture<>();
@@ -340,7 +269,6 @@ public class BingoTeamService {
             List<BingoItem> cachedItems = teamItemsCache.get(teamCode);
             if (cachedItems != null && !cachedItems.isEmpty()) {
                 listener.accept(new ArrayList<>(cachedItems));
-                // We'll still fetch fresh data below, but at least we've shown something immediately
             }
         }
 
@@ -367,7 +295,6 @@ public class BingoTeamService {
                                 jsonObject.addProperty(entry.getKey(), (Boolean)entry.getValue());
                             } else {
                                 // For complex objects, we'd convert to JsonElement
-                                // but for simplicity we'll just store as string
                                 jsonObject.addProperty(entry.getKey(), entry.getValue().toString());
                             }
                         }
@@ -383,9 +310,7 @@ public class BingoTeamService {
                         }
 
                         if (!items.isEmpty()) {
-                            log.info("Initial fetch for listener on team {} completed with {} items.", teamCode, items.size());
-
-                            // IMPORTANT: Only notify if the listener is still registered
+                            // Initial fetch for listener on team completed with items.
                             if (teamListeners.containsKey(teamCode) && teamListeners.get(teamCode) == listener) {
                                 listener.accept(new ArrayList<>(items));
                             }
@@ -397,8 +322,6 @@ public class BingoTeamService {
                     BingoConfig.ItemSourceType itemSourceType = BingoConfig.ItemSourceType.valueOf((String) teamData.get("itemSourceType"));
 
                     if (itemSourceType == BingoConfig.ItemSourceType.REMOTE && remoteUrl != null && !remoteUrl.isEmpty()) {
-                        log.info("Team {} is configured to use Remote URL ({}). Fetching remote items after initial load.", teamCode, remoteUrl);
-
                         // Then fetch items from remote URL
                         fetchItemsFromRemoteUrl(remoteUrl, teamCode)
                             .thenAccept(remoteItems -> {
@@ -410,8 +333,6 @@ public class BingoTeamService {
                                     }
 
                                     if (remoteItems != null && !remoteItems.isEmpty()) {
-                                        log.info("Initial remote URL fetch completed for team {} with {} items", teamCode, remoteItems.size());
-
                                         // Update the cache - safely
                                         List<BingoItem> updatedItems = safelyUpdateCache(teamCode, remoteItems);
 
@@ -421,22 +342,13 @@ public class BingoTeamService {
                                         // Update the storage
                                         updateTeamItems(teamCode, updatedItems)
                                             .thenAccept(success -> {
-                                                if (success) {
-                                                    log.info("Successfully updated items for team {}", teamCode);
-                                                } else {
-                                                    log.warn("Failed to update items for team {}", teamCode);
-                                                }
-                                                // Clear the initial loading flag now that everything is complete
                                                 initialLoadingTeams.remove(teamCode);
-                                                log.debug("Team {} initial loading completed after URL fetch", teamCode);
                                             })
                                             .exceptionally(ex -> {
-                                                log.error("Error updating items for team {}: {}", teamCode, ex.getMessage(), ex);
-                                                initialLoadingTeams.remove(teamCode); // Clear the loading flag even on error
+                                                initialLoadingTeams.remove(teamCode);
                                                 return null;
                                             });
                                     } else {
-                                        log.warn("Remote URL fetch completed but no items were found for team {}", teamCode);
                                         // Check if we have cached items we can use instead
                                         List<BingoItem> existingItems = teamItemsCache.get(teamCode);
                                         if (existingItems != null && !existingItems.isEmpty()) {
@@ -444,35 +356,29 @@ public class BingoTeamService {
                                         }
                                         // Clear the initial loading flag
                                         initialLoadingTeams.remove(teamCode);
-                                        log.debug("Team {} initial loading completed with empty URL result", teamCode);
                                     }
                                 } catch (Exception e) {
-                                    log.error("Error during remote URL item processing", e);
-                                    initialLoadingTeams.remove(teamCode); // Make sure flag is cleared even on exception
+                                    initialLoadingTeams.remove(teamCode);
                                 }
                             })
                             .exceptionally(ex -> {
-                                log.error("Error fetching items from remote URL for team {}: {}", teamCode, ex.getMessage(), ex);
-                                initialLoadingTeams.remove(teamCode); // Clear the loading flag on error
+                                initialLoadingTeams.remove(teamCode);
                                 return null;
                             });
                     } else {
                         // No remote URL, so we're done with initial loading
                         initialLoadingTeams.remove(teamCode);
-                        log.debug("Team {} initial loading completed (no remote URL)", teamCode);
                     }
                     
                     future.complete(null);
                 } else {
-                    log.error("Failed to get team data for team {}", teamCode);
-                    initialLoadingTeams.remove(teamCode); // Clear the loading flag on error
+                    initialLoadingTeams.remove(teamCode);
                     future.completeExceptionally(new RuntimeException("Failed to get team data for team " + teamCode));
                 }
             })
             .exceptionally(ex -> {
-                log.error("Error registering team listener: {}", ex.getMessage(), ex);
                 teamListeners.remove(teamCode);
-                initialLoadingTeams.remove(teamCode); // Clear the loading flag on error
+                initialLoadingTeams.remove(teamCode);
                 future.completeExceptionally(ex);
                 return null;
             });
@@ -487,8 +393,6 @@ public class BingoTeamService {
      */
     public void unregisterTeamListener(String teamCode) {
         if (teamListeners.containsKey(teamCode)) {
-            log.info("Unregistering listener for team: {}", teamCode);
- 
             // Remove the listener but KEEP the cache
             teamListeners.remove(teamCode);
             
@@ -502,24 +406,10 @@ public class BingoTeamService {
             for (Iterator<Map.Entry<String, CompletableFuture<List<BingoItem>>>> it = activeRemoteUrlRequests.entrySet().iterator(); it.hasNext();) {
                 Map.Entry<String, CompletableFuture<List<BingoItem>>> entry = it.next();
                 if (entry.getKey().startsWith(teamCode + ":")) {
-                    log.info("Cancelling active request for URL associated with team: {}", teamCode);
-                    entry.getValue().complete(new ArrayList<>());  // Complete with empty list to avoid hanging
+                    entry.getValue().complete(new ArrayList<>());
                     it.remove();
                 }
             }
-        }
-    }
-    
-    /**
-     * Clears the initial loading flag for a team.
-     * Used when we want to allow Firebase updates again.
-     *
-     * @param teamCode The team code
-     */
-    public void clearInitialLoadingFlag(String teamCode) {
-        if (initialLoadingTeams.containsKey(teamCode) && initialLoadingTeams.get(teamCode)) {
-            log.debug("Manually clearing initial loading flag for team: {}", teamCode);
-            initialLoadingTeams.remove(teamCode);
         }
     }
 
@@ -530,82 +420,19 @@ public class BingoTeamService {
      * @return A CompletableFuture indicating success or failure.
      */
     public CompletableFuture<Boolean> deleteTeam(String teamCode) {
-        log.info("Requesting deletion of team: {}", teamCode);
-        // TODO: Stop any active listeners or sync tasks for this team if necessary before deleting.
         return teamStorage.deleteTeam(teamCode)
             .thenApply(success -> {
-                if (success) {
-                    log.info("Successfully deleted team {} from storage.", teamCode);
-                } else {
-                    log.warn("Failed to delete team {} from storage.", teamCode);
-                }
                 // Clean up local cache regardless of backend success
                 teamItemsCache.remove(teamCode);
                 teamListeners.remove(teamCode);
                 return success;
             })
             .exceptionally(e -> {
-                log.error("Error deleting team {}: {}", teamCode, e.getMessage(), e);
-                 // Clean up local cache even on exception
+                // Clean up local cache even on exception
                 teamItemsCache.remove(teamCode);
                 teamListeners.remove(teamCode);
                 return false; // Indicate failure
             });
-    }
-
-    /**
-     * Converts the raw item list map from storage/API into BingoItem objects.
-     *
-     * @param itemMaps List of maps, each representing an item's data.
-     * @return A list of BingoItem objects.
-     */
-    private List<BingoItem> convertMapToBingoItems(List<Map<String, Object>> itemMaps) {
-        if (itemMaps == null) {
-            return new ArrayList<>();
-        }
-
-        List<BingoItem> bingoItems = new ArrayList<>();
-        for (Map<String, Object> itemMap : itemMaps) {
-            String name = (String) itemMap.get("name");
-            if (name == null || name.isEmpty()) continue;
-
-            BingoItem item = new BingoItem(name);
-            item.setObtained((Boolean) itemMap.getOrDefault("obtained", false));
-
-            // Lookup Item ID using ItemManager
-            Object itemIdObj = itemMap.get("itemId"); // Check if ID was already provided (e.g., from MANUAL source)
-            int itemId = -1; // Default
-            if (itemIdObj instanceof Number) {
-                 itemId = ((Number) itemIdObj).intValue();
-            }
-
-            // If ID is still default (-1), try to look it up by name
-            if (itemId == -1) {
-                List<net.runelite.http.api.item.ItemPrice> results = itemManager.search(name);
-                if (!results.isEmpty()) {
-                    itemId = results.get(0).getId();
-                    log.debug("Looked up itemId for '{}': {}", name, itemId);
-                } else {
-                     log.warn("Could not find itemId for item name: {}", name);
-                }
-            }
-            item.setItemId(itemId);
-
-            if ((Boolean) itemMap.getOrDefault("isGroup", false)) {
-                 item.setGroup(true);
-                 Object altNamesObj = itemMap.get("alternativeNames");
-                 if (altNamesObj instanceof List) {
-                     // Ensure elements are Strings
-                     List<String> altNames = ((List<?>) altNamesObj).stream()
-                                                       .filter(obj -> obj instanceof String)
-                                                       .map(obj -> (String) obj)
-                                                       .collect(Collectors.toList());
-                    item.setAlternativeNames(altNames);
-                 }
-            }
-            bingoItems.add(item);
-        }
-        return bingoItems;
     }
 
     /**
@@ -616,19 +443,13 @@ public class BingoTeamService {
      */
     private void updateLocalCache(String teamCode, TeamData teamData) {
         try {
-            log.debug("Updating local cache for team {}", teamCode);
-
             // Check if we need to fetch items from a remote URL
             if (teamData.getItemSourceType() == BingoConfig.ItemSourceType.REMOTE &&
                 teamData.getRemoteUrl() != null && !teamData.getRemoteUrl().isEmpty()) {
 
-                log.info("Team {} is configured to use Remote URL. Fetching items from {}", teamCode, teamData.getRemoteUrl());
-
                 // Fetch items from the remote URL
                 fetchItemsFromRemoteUrl(teamData.getRemoteUrl(), teamCode).thenAccept(remoteItems -> {
                     if (remoteItems != null && !remoteItems.isEmpty()) {
-                        log.info("Successfully fetched {} items from remote URL for team {}", remoteItems.size(), teamCode);
-
                         // Create a new list merging remote items with obtained status
                         List<BingoItem> mergedItems = new ArrayList<>(remoteItems);
 
@@ -664,8 +485,6 @@ public class BingoTeamService {
                         TeamStorageStrategy storage = storageFactory.getStorageStrategyForTeam(teamCode);
                         storage.updateTeamItems(teamCode, mergedItems);
                     } else {
-                        log.warn("No items found in remote URL for team {}. Using empty list.", teamCode);
-
                         // Update with empty list to ensure we don't show manual items
                         teamItemsCache.put(teamCode, new ArrayList<>());
 
@@ -706,9 +525,6 @@ public class BingoTeamService {
                         listener.accept(manualItems);
                     }
 
-                    log.info("Updated local cache for team {} with {} manual items",
-                            teamCode, manualItems.size());
-
                     // Update the items in the storage
                     TeamStorageStrategy storage = storageFactory.getStorageStrategyForTeam(teamCode);
                     storage.updateTeamItems(teamCode, manualItems);
@@ -725,12 +541,9 @@ public class BingoTeamService {
                 if (listener != null) {
                     listener.accept(items);
                 }
-
-                log.info("Updated local cache for team {} with {} items from storage",
-                        teamCode, items.size());
             }
         } catch (Exception e) {
-            log.error("Error updating local cache", e);
+            // Error updating local cache
         }
     }
 
@@ -751,7 +564,7 @@ public class BingoTeamService {
             // Update the local cache
             updateLocalCache(teamCode, team);
         } catch (Exception e) {
-            log.error("Error updating local cache from JsonObject", e);
+            // Error updating local cache from JsonObject
         }
     }
 
@@ -764,7 +577,6 @@ public class BingoTeamService {
      */
     private CompletableFuture<List<BingoItem>> fetchItemsFromRemoteUrl(String remoteUrl, String teamCode) {
         if (remoteUrl == null || remoteUrl.trim().isEmpty()) {
-            log.warn("Remote URL is null or empty");
             return CompletableFuture.completedFuture(new ArrayList<>());
         }
 
@@ -779,7 +591,6 @@ public class BingoTeamService {
         CompletableFuture<List<BingoItem>> existingFuture = activeRemoteUrlRequests.get(requestKey);
 
         if (existingFuture != null && !existingFuture.isDone()) {
-            log.info("Reusing existing request for URL: {}", normalizedUrl);
             return existingFuture;
         }
 
@@ -792,20 +603,12 @@ public class BingoTeamService {
         // Make sure to remove it when done
         future.whenComplete((result, ex) -> {
             activeRemoteUrlRequests.remove(requestKey);
-            log.debug("Removed URL request from tracking map: {}", normalizedUrl);
         });
-
-        log.info("Fetching items from remote URL: {}", normalizedUrl);
 
         // Execute the request
         executeRemoteUrlRequest(normalizedUrl, future);
 
         return future;
-    }
-
-    // Overload for backward compatibility
-    private CompletableFuture<List<BingoItem>> fetchItemsFromRemoteUrl(String remoteUrl) {
-        return fetchItemsFromRemoteUrl(remoteUrl, "unknown");
     }
 
     /**
@@ -823,17 +626,14 @@ public class BingoTeamService {
                 // If it's just the ID, convert to full raw URL
                 if (url.matches("https?://pastebin\\.com/[a-zA-Z0-9]+$")) {
                     url = url.replaceAll("(https?://pastebin\\.com/)([a-zA-Z0-9]+)$", "$1raw/$2");
-                    log.info("Converted Pastebin URL to raw format: {} -> {}", url, url);
                 }
                 // If it's a full URL without /raw/, insert it
                 else if (url.matches("https?://pastebin\\.com/[^/]+$")) {
                     url = url.replace("pastebin.com/", "pastebin.com/raw/");
-                    log.info("Converted Pastebin URL to raw format: {} -> {}", url, url);
                 }
                 // If it's just the ID without URL, prepend the full raw URL
                 else if (url.matches("[a-zA-Z0-9]+")) {
                     url = "https://pastebin.com/raw/" + url;
-                    log.info("Converted Pastebin ID to full raw URL: {} -> {}", url, url);
                 }
             }
 
@@ -847,7 +647,6 @@ public class BingoTeamService {
             } else {
                 url += "?" + cacheParam + "&" + teamParam;
             }
-            log.debug("Added cache-busting to URL for team {}: {}", teamCode, url);
         }
 
         return url;
@@ -859,7 +658,6 @@ public class BingoTeamService {
     private void executeRemoteUrlRequest(String url, CompletableFuture<List<BingoItem>> future) {
         // Handle empty URLs
         if (url == null || url.isEmpty()) {
-            log.warn("Cannot fetch from empty URL");
             future.complete(new ArrayList<>());
             return;
         }
@@ -870,29 +668,17 @@ public class BingoTeamService {
             .get()
             .build();
 
-        log.debug("Sending HTTP request to: {}", url);
-
         httpClient.newCall(request).enqueue(new Callback() {
             @Override
             public void onFailure(Call call, IOException e) {
-                log.error("Failed to fetch items from remote URL: {}", e.getMessage(), e);
                 future.complete(new ArrayList<>());
             }
 
             @Override
             public void onResponse(Call call, Response response) throws IOException {
-                log.debug("Received HTTP response with code: {}", response.code());
-
                 try (ResponseBody responseBody = response.body()) {
                     if (response.isSuccessful() && responseBody != null) {
                         String responseStr = responseBody.string();
-                        log.info("Received response from remote URL (length: {})", responseStr.length());
-
-                        if (responseStr.length() < 100) {
-                            log.info("Content preview: {}", responseStr);
-                        } else {
-                            log.debug("Content preview (first 100 chars): {}", responseStr.substring(0, 100));
-                        }
 
                         // Process the data in a background thread to avoid blocking the OkHttp callback thread
                         executorService.submit(() -> {
@@ -900,31 +686,15 @@ public class BingoTeamService {
                                 // Parse the response
                                 List<BingoItem> items = parseRemoteItems(responseStr);
 
-                                log.info("Fetched {} items from remote URL", items.size());
-
-                                if (!items.isEmpty()) {
-                                    String itemNames = items.stream()
-                                        .limit(5)
-                                        .map(BingoItem::getName)
-                                        .collect(Collectors.joining(", "));
-                                    log.info("First few items: {}", itemNames);
-                                }
-
                                 future.complete(items);
                             } catch (Exception e) {
-                                log.error("Error parsing remote response: {}", e.getMessage(), e);
                                 future.complete(new ArrayList<>());
                             }
                         });
                     } else {
-                        log.error("Failed to fetch items from remote URL: HTTP {}", response.code());
-                        if (responseBody != null) {
-                            log.error("Response body: {}", responseBody.string());
-                        }
                         future.complete(new ArrayList<>());
                     }
                 } catch (Exception e) {
-                    log.error("Error processing remote URL response: {}", e.getMessage(), e);
                     future.complete(new ArrayList<>());
                 }
             }
@@ -942,17 +712,13 @@ public class BingoTeamService {
         final int MAX_ITEMS = 500; // Limit to 500 items to prevent excessive processing
 
         if (response == null || response.isEmpty()) {
-            log.warn("Remote response is null or empty");
             return items;
         }
 
         // Add safety check for extremely large responses
         if (response.length() > 1000000) { // 1MB limit
-            log.warn("Remote response exceeds 1MB (size: {}), truncating to prevent excessive processing", response.length());
             response = response.substring(0, 1000000);
         }
-
-        log.debug("Attempting to parse remote response (length: {}) as JSON or plain text", response.length());
 
         try {
             // Try to parse as JSON first with lenient parsing
@@ -963,12 +729,10 @@ public class BingoTeamService {
             if (jsonElement.isJsonArray()) {
                 // Parse as a JSON array of items
                 JsonArray jsonArray = jsonElement.getAsJsonArray();
-                log.debug("Parsed response as JSON array with {} elements", jsonArray.size());
 
                 int count = 0;
                 for (JsonElement element : jsonArray) {
                     if (count >= MAX_ITEMS) {
-                        log.warn("Maximum item limit ({}) reached, truncating additional items", MAX_ITEMS);
                         break;
                     }
 
@@ -1036,7 +800,6 @@ public class BingoTeamService {
                 int count = 0;
                 for (Map.Entry<String, JsonElement> entry : jsonObject.entrySet()) {
                     if (count >= MAX_ITEMS) {
-                        log.warn("Maximum item limit ({}) reached, truncating additional items", MAX_ITEMS);
                         break;
                     }
 
@@ -1089,20 +852,15 @@ public class BingoTeamService {
 
                 // Also limit items from manual parsing
                 if (items.size() > MAX_ITEMS) {
-                    log.warn("Maximum item limit ({}) reached, truncating {} additional items",
-                        MAX_ITEMS, items.size() - MAX_ITEMS);
                     items = items.subList(0, MAX_ITEMS);
                 }
             }
         } catch (Exception e) {
             // If JSON parsing fails, try parsing as a plain text list
-            log.warn("Failed to parse remote items as JSON, falling back to plain text parsing", e);
             items = parseManualItems(response);
 
             // Also limit items from manual parsing
             if (items.size() > MAX_ITEMS) {
-                log.warn("Maximum item limit ({}) reached, truncating {} additional items",
-                    MAX_ITEMS, items.size() - MAX_ITEMS);
                 items = items.subList(0, MAX_ITEMS);
             }
         }
@@ -1131,7 +889,7 @@ public class BingoTeamService {
         item.setAlternativeNames(alternatives);
 
         // Try to set the item ID from the first item in the group
-        if (group.getItemNames().size() > 0) {
+        if (!group.getItemNames().isEmpty()) {
             String firstItemName = group.getItemNames().get(0);
             net.runelite.http.api.item.ItemPrice itemPrice = lookupItemByName(firstItemName);
             if (itemPrice != null) {
@@ -1152,69 +910,37 @@ public class BingoTeamService {
         List<BingoItem> items = new ArrayList<>();
 
         if (manualItems == null || manualItems.isEmpty()) {
-            log.warn("Manual items string is null or empty");
             return items;
         }
 
-        log.debug("Parsing manual items string: '{}' (length: {})",
-            manualItems.length() > 100 ? manualItems.substring(0, 100) + "..." : manualItems,
-            manualItems.length());
-
         // Split by newlines or commas
         String[] itemNames = manualItems.split("[\\r\\n,]+");
-
-        log.debug("Split into {} item names", itemNames.length);
 
         for (int i = 0; i < itemNames.length; i++) {
             String itemName = itemNames[i].trim();
             if (!itemName.isEmpty()) {
                 try {
-                    log.debug("Processing item #{}: '{}'", i+1, itemName);
-
                     // Check if this is a group item (contains colons)
                     if (itemName.contains(":")) {
                         // This is an item group
-                        log.debug("Processing as group item: {}", itemName);
                         BingoItemGroup itemGroup = BingoItemGroup.fromString(itemName);
                         BingoItem groupItem = createGroupItem(itemGroup);
                         items.add(groupItem);
-                        log.debug("Added group item: {} with {} alternative names",
-                            groupItem.getName(),
-                            groupItem.getAlternativeNames() != null ? groupItem.getAlternativeNames().size() : 0);
                     } else {
-                        log.debug("Processing as regular item: {}", itemName);
                         BingoItem item = new BingoItem(itemName);
 
                         // Try to look up the item ID
                         net.runelite.http.api.item.ItemPrice itemPrice = lookupItemByName(itemName);
                         if (itemPrice != null) {
                             item.setItemId(itemPrice.getId());
-                            log.debug("Found item ID {} for {}", itemPrice.getId(), itemName);
-                        } else {
-                            log.debug("No item ID found for {}", itemName);
                         }
 
                         items.add(item);
-                        log.debug("Added item: {}", item.getName());
                     }
                 } catch (Exception e) {
-                    log.error("Error processing manual item '{}': {}", itemName, e.getMessage(), e);
+                    // Error processing manual item
                 }
             }
-        }
-
-        log.info("Parsed {} items from manual items string (original string length: {})",
-            items.size(), manualItems.length());
-
-        // Debug first few items
-        if (!items.isEmpty()) {
-            StringBuilder itemsPreview = new StringBuilder();
-            for (int i = 0; i < Math.min(5, items.size()); i++) {
-                if (i > 0) itemsPreview.append(", ");
-                itemsPreview.append(items.get(i).getName());
-            }
-            if (items.size() > 5) itemsPreview.append(", ...");
-            log.debug("First few items: {}", itemsPreview.toString());
         }
 
         return items;
@@ -1232,7 +958,6 @@ public class BingoTeamService {
 
         // Handle empty input immediately without creating a thread
         if (manualItems == null || manualItems.isEmpty()) {
-            log.warn("Manual items string is null or empty");
             future.complete(new ArrayList<>());
             return future;
         }
@@ -1243,7 +968,6 @@ public class BingoTeamService {
                 List<BingoItem> items = parseManualItems(manualItems);
                 future.complete(items);
             } catch (Exception e) {
-                log.error("Error parsing manual items", e);
                 future.complete(new ArrayList<>());
             }
         });
@@ -1288,7 +1012,6 @@ public class BingoTeamService {
      * @return A CompletableFuture that resolves to a boolean indicating success
      */
     public CompletableFuture<Boolean> refreshTeamItems(String teamCode) {
-        log.info("Manually refreshing team items for team: {}", teamCode);
         CompletableFuture<Boolean> future = new CompletableFuture<>();
 
         // Get the appropriate storage strategy for this team
@@ -1298,9 +1021,6 @@ public class BingoTeamService {
         storage.getTeamData(teamCode).thenAccept(teamData -> {
             TeamData team = TeamData.fromMap(teamData);
             if (team != null) {
-                log.info("Found team: code={}, name={}, itemSourceType={}, remoteUrl={}",
-                        teamCode, team.getTeamName(), team.getItemSourceType(), team.getRemoteUrl());
-
                 // Check if we need to fetch items from a remote URL
                 if (team.getItemSourceType() == BingoConfig.ItemSourceType.REMOTE &&
                     team.getRemoteUrl() != null && !team.getRemoteUrl().isEmpty()) {
@@ -1308,8 +1028,6 @@ public class BingoTeamService {
                     // Fetch items from the remote URL
                     fetchItemsFromRemoteUrl(team.getRemoteUrl(), teamCode).thenAccept(remoteItems -> {
                         if (remoteItems != null && !remoteItems.isEmpty()) {
-                            log.info("Fetched {} items from remote URL", remoteItems.size());
-
                             // Update the cache safely
                             List<BingoItem> items = safelyUpdateCache(teamCode, remoteItems);
 
@@ -1321,12 +1039,8 @@ public class BingoTeamService {
 
                             // Update the items in the storage
                             storage.updateTeamItems(teamCode, items)
-                                .thenAccept(success -> {
-                                    future.complete(success);
-                                });
+                                .thenAccept(future::complete);
                         } else {
-                            log.warn("No items fetched from remote URL");
-
                             // Check if we have cached items we can use instead
                             List<BingoItem> existingItems = teamItemsCache.get(teamCode);
                             if (existingItems != null && !existingItems.isEmpty()) {
@@ -1342,15 +1056,12 @@ public class BingoTeamService {
                         }
                     });
                 } else {
-                    log.warn("Team is not configured to use a remote URL");
                     future.complete(false);
                 }
             } else {
-                log.error("Team not found: {}", teamCode);
                 future.complete(false);
             }
         }).exceptionally(e -> {
-            log.error("Error refreshing team items", e);
             future.complete(false);
             return null;
         });
@@ -1413,13 +1124,5 @@ public class BingoTeamService {
             return itemsCopy;
         }
     }
-
-    /**
-     * Manually triggers the cache cleanup process
-     * This can be useful for testing or freeing up memory immediately
-     */
-    public void triggerCacheCleanup() {
-        log.info("Manually triggering cache cleanup");
-        cleanupOldCaches();
-    }
 } 
+

@@ -167,16 +167,6 @@ public class BingoPlugin extends Plugin {
         // Fallback to default
         return "default";
     }
-    
-    /**
-     * Updates our backup tracking system when switching profiles
-     */
-    public void setCurrentProfileBackup(String profile) {
-        if (profile != null && !profile.isEmpty()) {
-            log.info("Setting profile backup to: {}", profile);
-            currentProfileBackup = profile;
-        }
-    }
 
     /**
      * Represents an item that has been obtained
@@ -289,8 +279,6 @@ public class BingoPlugin extends Plugin {
                 // Make sure we load saved obtained items from local config first
                 // This is critical to ensure we don't overwrite local state with remote state
                 loadSavedItems();
-                log.info("Loaded local saved items during startup");
-                
                 // Add the panel to the sidebar if enabled in config
                 if (config.showSidebar()) {
                     clientThread.invokeLater(() -> {
@@ -299,17 +287,12 @@ public class BingoPlugin extends Plugin {
                         }
                     });
                 }
-                
-                // Initialize with the current profile
-                log.info("Starting with bingo profile: {}", config.currentProfile());
-                
+
                 // If the current profile is a team profile, set up the team listener
                 BingoConfig.BingoMode bingoMode = profileManager.getProfileBingoMode();
                 if (bingoMode == BingoConfig.BingoMode.TEAM) {
                     String teamCode = profileManager.getProfileTeamCode();
                     if (teamCode != null && !teamCode.isEmpty()) {
-                        log.info("Team profile detected with code: {}", teamCode);
-                        
                         // Register a team listener to get updates
                         teamService.registerTeamListener(teamCode, this::updateItemsFromFirebase);
                         
@@ -565,21 +548,16 @@ public class BingoPlugin extends Plugin {
      * @return The obtained item, or null if not found
      */
     private ObtainedItem findAndMarkItem(String itemName) {
-        // Clean up the item name
         itemName = cleanItemName(itemName);
         
         // Try to find the item in our list
         BingoItem bingoItem = itemsByName.get(itemName.toLowerCase());
         if (bingoItem == null) {
-            // Try to find a partial match using more precise logic
             for (Map.Entry<String, BingoItem> entry : itemsByName.entrySet()) {
-                // Only consider cases where the entry key contains the FULL item name, not vice versa
-                // This prevents "Hammer" from matching with "Dragon Warhammer"
                 if (entry.getKey().contains(itemName.toLowerCase()) && 
                     (entry.getKey().startsWith(itemName.toLowerCase()) || 
                      entry.getKey().contains(" " + itemName.toLowerCase()))) {
                     bingoItem = entry.getValue();
-                    log.debug("Partial match found: '{}' in '{}'", itemName, entry.getKey());
                     break;
                 }
             }
@@ -602,46 +580,46 @@ public class BingoPlugin extends Plugin {
                 log.debug("Item already obtained: {}", itemName);
                 return null;
             }
-            
+
             // Mark the item as obtained
             bingoItem.setObtained(true);
-            
+
             // Get the index of the item
             int index = items.indexOf(bingoItem);
-            
+
             // Save the obtained status
             saveObtainedItems();
-            
+
             // For team profiles, update the item in Firebase
             BingoConfig.BingoMode bingoMode = profileManager.getProfileBingoMode();
-            if (bingoMode == BingoConfig.BingoMode.TEAM) {
-                String teamCode = profileManager.getProfileTeamCode();
-                if (teamCode != null && !teamCode.isEmpty()) {
-                    log.info("Updating item obtained status in Firebase for team {}: {}", teamCode, bingoItem.getName());
-                    
-                    // Wait for the Firebase update to complete to ensure it's properly updated
-                    try {
-                        boolean success = teamService.updateItemObtained(teamCode, bingoItem.getName(), true)
-                            .get(10, TimeUnit.SECONDS); // Wait up to 10 seconds for the update to complete
-                        
-                        if (success) {
-                            log.info("Successfully updated item obtained status in Firebase");
-                        } else {
-                            log.error("Failed to update item obtained status in Firebase");
-                            
-                            // Try again with a direct call
-                            log.info("Trying again with a direct call...");
-                            success = teamService.updateItemObtained(teamCode, bingoItem.getName(), true)
-                                .get(10, TimeUnit.SECONDS);
-                            
-                            if (success) {
-                                log.info("Successfully updated item obtained status in Firebase on second attempt");
-                            } else {
-                                log.error("Failed to update item obtained status in Firebase on second attempt");
+            {
+                if (bingoMode == BingoConfig.BingoMode.TEAM) {
+                    String teamCode = profileManager.getProfileTeamCode();
+                    if (teamCode != null && !teamCode.isEmpty()) {
+                        try {
+                            boolean success = teamService.updateItemObtained(teamCode, bingoItem.getName(), true)
+                                    .get(10, TimeUnit.SECONDS);
+
+                            {
+                                if (success) {
+                                    log.info("Successfully updated item obtained status in Firebase");
+                                } else {
+                                    log.error("Failed to update item obtained status in Firebase");
+
+                                    log.info("Trying again with a direct call...");
+                                }
+                                success = teamService.updateItemObtained(teamCode, bingoItem.getName(), true)
+                                        .get(10, TimeUnit.SECONDS);
+
+                                if (success) {
+                                    log.info("Successfully updated item obtained status in Firebase on second attempt");
+                                } else {
+                                    log.error("Failed to update item obtained status in Firebase on second attempt");
+                                }
                             }
+                        } catch (InterruptedException | ExecutionException | TimeoutException e) {
+                            log.error("Error waiting for Firebase update to complete", e);
                         }
-                    } catch (InterruptedException | ExecutionException | TimeoutException e) {
-                        log.error("Error waiting for Firebase update to complete", e);
                     }
                 }
             }
@@ -683,8 +661,6 @@ public class BingoPlugin extends Plugin {
             return;
         }
 
-        log.info("Updating items from team storage: {} items", updatedItems.size());
-        
         // Execute on the client thread to ensure thread safety
         clientThread.invokeLater(() -> {
             // Check if the profile has changed since this update was triggered
@@ -858,10 +834,20 @@ public class BingoPlugin extends Plugin {
         // Check for row/column/board completions
         checkForCompletions(index);
 
-        // If in team mode, update the team service
+        // Get the team info if in team mode
+        String teamCode = null;
+        String teamName = null;
         BingoConfig.BingoMode bingoMode = profileManager.getProfileBingoMode();
         if (bingoMode == BingoConfig.BingoMode.TEAM) {
-            String teamCode = profileManager.getProfileTeamCode();
+            teamCode = profileManager.getProfileTeamCode();
+            teamName = profileManager.getProfileTeamName();
+            
+            // If we have a team code but no team name, use the code as the name
+            if (teamCode != null && !teamCode.isEmpty() && (teamName == null || teamName.isEmpty())) {
+                teamName = "Team " + teamCode;
+            }
+            
+            // Update the team service if we have a team code
             if (teamCode != null && !teamCode.isEmpty()) {
                 teamService.updateItemObtained(teamCode, itemName, true);
             }
@@ -869,6 +855,7 @@ public class BingoPlugin extends Plugin {
 
         // Send Discord notification
         String message = "Obtained bingo item: " + itemName;
+        final String finalTeamName = teamName;
 
         // Always capture screenshot
         captureScreenshotAsync(screenshot -> {
@@ -877,7 +864,8 @@ public class BingoPlugin extends Plugin {
                     screenshot,
                     false,
                     profileManager.getProfileDiscordWebhook(),
-                    executor
+                    executor,
+                    finalTeamName
             );
         });
 
@@ -1056,6 +1044,21 @@ public class BingoPlugin extends Plugin {
 
         String message = getCompletionMessage(completionType, completionIndex);
 
+        // Get the team name if in team mode
+        String teamName = null;
+        BingoConfig.BingoMode bingoMode = profileManager.getProfileBingoMode();
+        if (bingoMode == BingoConfig.BingoMode.TEAM) {
+            teamName = profileManager.getProfileTeamName();
+            String teamCode = profileManager.getProfileTeamCode();
+            
+            // If we have a team code but no team name, use the code as the name
+            if ((teamName == null || teamName.isEmpty()) && teamCode != null && !teamCode.isEmpty()) {
+                teamName = "Team " + teamCode;
+            }
+        }
+        
+        final String finalTeamName = teamName;
+
         // Send Discord notification
         captureScreenshotAsync(screenshot -> {
             discordNotifier.sendNotification(
@@ -1063,7 +1066,8 @@ public class BingoPlugin extends Plugin {
                     screenshot,
                     true,
                     profileManager.getProfileDiscordWebhook(),
-                    executor
+                    executor,
+                    finalTeamName
             );
         });
 
@@ -1082,30 +1086,21 @@ public class BingoPlugin extends Plugin {
      * Reloads items based on the current profile
      */
     public void reloadItems() {
-        String currentProfile = config.currentProfile();
-        log.info("Reloading items for profile: {}", currentProfile);
-        
         // Clear existing items
         items.clear();
         itemsByName.clear();
         
         // Get the current profile's bingo mode
         BingoConfig.BingoMode bingoMode = profileManager.getProfileBingoMode();
-        log.info("Current profile bingo mode: {}", bingoMode);
         
         // If this is a team profile, handle team-specific logic
         if (bingoMode == BingoConfig.BingoMode.TEAM) {
             String teamCode = profileManager.getProfileTeamCode();
             if (teamCode != null && !teamCode.isEmpty()) {
-                log.info("Processing team: {}", teamCode);
-                
-                // CRITICAL STEP 1: Get cached items BEFORE registering listener
                 // This ensures we have items to display immediately during profile switching
                 List<BingoItem> cachedItems = teamService.getTeamCachedItems(teamCode);
                 if (cachedItems != null && !cachedItems.isEmpty()) {
-                    log.info("Using {} cached items immediately for team {}", 
-                        cachedItems.size(), teamCode);
-                    
+
                     // Add the cached items to our collections
                     for (BingoItem item : cachedItems) {
                         items.add(item);
@@ -1123,10 +1118,7 @@ public class BingoPlugin extends Plugin {
                 } else {
                     log.info("No cached items available for team {}", teamCode);
                 }
-                
-                // Now register the team listener to receive updates going forward
-                // This is done AFTER checking the cache to prioritize immediate display
-                log.info("Registering team listener for team: {}", teamCode);
+
                 teamService.registerTeamListener(teamCode, this::updateItemsFromFirebase);
                 
                 // Provide fast feedback in the UI regardless of network state
@@ -1292,7 +1284,6 @@ public class BingoPlugin extends Plugin {
             // This ensures that if an item is obtained in Firebase, it's displayed correctly in the UI
             String teamCode = profileManager.getProfileTeamCode();
             if (teamCode != null && !teamCode.isEmpty()) {
-                log.info("Checking Firebase state to ensure UI reflects obtained items correctly");
                 teamService.getTeamData(teamCode)
                     .thenAccept(teamData -> {
                         if (teamData != null && teamData.containsKey("items")) {
@@ -1313,12 +1304,9 @@ public class BingoPlugin extends Plugin {
                                             if (itemData.containsKey("obtained") && Boolean.TRUE.equals(itemData.get("obtained"))) {
                                                 // This item is marked as obtained in Firebase
                                                 String itemName = (String) itemData.getOrDefault("name", entry.getKey());
-                                                log.info("Found item obtained in Firebase but potentially not in UI: {}", itemName);
-                                                
                                                 // Find this item in our local list and mark it as obtained
                                                 BingoItem item = itemsByName.get(itemName.toLowerCase());
                                                 if (item != null && !item.isObtained()) {
-                                                    log.info("Updating local UI to show item {} as obtained", itemName);
                                                     item.setObtained(true);
                                                     updatedAnyItem = true;
                                                 }
@@ -1368,7 +1356,6 @@ public class BingoPlugin extends Plugin {
             if (profileManager.getProfileBingoMode() == BingoConfig.BingoMode.TEAM) {
                 String teamCode = profileManager.getProfileTeamCode();
                 if (teamCode != null && !teamCode.isEmpty()) {
-                    log.info("No local data found, checking Firebase for team: {}", teamCode);
                     loadSavedItems(); // This will trigger the Firebase check in team mode
                 }
             }
@@ -1506,8 +1493,6 @@ public class BingoPlugin extends Plugin {
     private void updateRemoteItems() {
         String currentProfile = config.currentProfile();
         String remoteUrl = profileManager.getProfileRemoteUrl();
-        log.info("Updating items from remote URL: {}", remoteUrl);
-
         if (remoteUrl == null || remoteUrl.isEmpty()) {
             log.warn("Remote URL is empty");
             return;
@@ -1528,7 +1513,6 @@ public class BingoPlugin extends Plugin {
             // Convert pastebin.com/xyz to pastebin.com/raw/xyz
             if (!remoteUrl.contains("/raw/")) {
                 remoteUrl = remoteUrl.replace("pastebin.com/", "pastebin.com/raw/");
-                log.info("Converted Pastebin URL to raw: {}", remoteUrl);
             }
         }
 
@@ -1538,8 +1522,6 @@ public class BingoPlugin extends Plugin {
                 .get()
                 .build();
 
-        // Execute the request
-        log.info("Sending request to remote URL: {}", remoteUrl);
         okHttpClient.newCall(request).enqueue(new Callback() {
             @Override
             public void onFailure(Call call, IOException e) {
@@ -1552,8 +1534,7 @@ public class BingoPlugin extends Plugin {
                         log.info("Ignoring remote URL failure because profile has changed");
                         return;
                     }
-                    
-                    log.info("Remote URL fetch failed, not falling back to manual items");
+
                     SwingUtilities.invokeLater(() -> {
                         Optional.ofNullable(panel).ifPresent(p -> {
                             // Just update UI with current (likely empty) items
@@ -1573,14 +1554,11 @@ public class BingoPlugin extends Plugin {
                 try (ResponseBody responseBody = response.body()) {
                     if (response.isSuccessful() && responseBody != null) {
                         String content = responseBody.string();
-                        log.info("Received content from remote URL (length: {})", content.length());
                         if (content.length() < 100) {
                             log.info("Content preview: {}", content);
                         }
 
                         List<String> lines = Arrays.asList(content.split("\\r?\\n"));
-                        log.info("Parsed {} lines from remote URL", lines.size());
-
                         // Process the items on the client thread
                         clientThread.invokeLater(() -> {
                             // Check if the profile has changed
@@ -1607,8 +1585,7 @@ public class BingoPlugin extends Plugin {
                                 log.info("Ignoring remote URL failure because profile has changed");
                                 return;
                             }
-                            
-                            log.info("Remote URL HTTP error, not falling back to manual items");
+
                             SwingUtilities.invokeLater(() -> {
                                 Optional.ofNullable(panel).ifPresent(p -> {
                                     // Just update UI with current (likely empty) items
@@ -1632,8 +1609,7 @@ public class BingoPlugin extends Plugin {
                             log.info("Ignoring remote URL parsing error because profile has changed");
                             return;
                         }
-                        
-                        log.info("Remote URL parsing error, not falling back to manual items");
+
                         SwingUtilities.invokeLater(() -> {
                             Optional.ofNullable(panel).ifPresent(p -> {
                                 // Just update UI with current (likely empty) items
@@ -1756,9 +1732,6 @@ public class BingoPlugin extends Plugin {
         if (bingoMode == BingoConfig.BingoMode.TEAM) {
             String teamCode = profileManager.getProfileTeamCode();
             if (teamCode != null && !teamCode.isEmpty()) {
-                log.info("Updating item obtained status for team {}: {} = {}", 
-                    teamCode, item.getName(), newStatus);
-                
                 // Use a background thread to avoid blocking the UI
                 executor.submit(() -> {
                     try {
@@ -1766,8 +1739,6 @@ public class BingoPlugin extends Plugin {
                             .get(10, TimeUnit.SECONDS); // Wait up to 10 seconds for the update to complete
                         
                         if (success) {
-                            log.info("Successfully updated item obtained status in team storage");
-                            
                             // If this is a group item, also update the UI for all items in the group
                             if (item.isGroup() && item.getAlternativeNames() != null) {
                                 SwingUtilities.invokeLater(() -> {
@@ -1782,9 +1753,6 @@ public class BingoPlugin extends Plugin {
                             }
                         } else {
                             log.error("Failed to update item obtained status in team storage");
-                            
-                            // Try again with a direct call
-                            log.info("Trying again with a direct call...");
                             success = teamService.updateItemObtained(teamCode, item.getName(), newStatus)
                                 .get(10, TimeUnit.SECONDS);
                             
@@ -1864,11 +1832,8 @@ public class BingoPlugin extends Plugin {
         profileManager.setProfileItemList(manualItems);
         profileManager.setProfileRefreshInterval(refreshInterval);
         profileManager.setProfilePersistObtained(persistObtained);
-        
-        // Clean up the temporary profile
+
         profileManager.deleteProfile(tempProfileName);
-        
-        // Switch to the renamed profile
         profileManager.switchProfile(profileName);
         
         future.complete(true);
@@ -1920,8 +1885,6 @@ public class BingoPlugin extends Plugin {
             }
             return;
         }
-        
-        log.info("Manually refreshing team items for team: {}", teamCode);
         if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
             client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
                     "Refreshing team items from remote URL...", "");
@@ -1934,16 +1897,13 @@ public class BingoPlugin extends Plugin {
                     .get(30, TimeUnit.SECONDS); // Wait up to 30 seconds for the refresh to complete
                 
                 if (success) {
-                    log.info("Successfully refreshed team items from remote URL");
                     if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
                         client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
                                 "Successfully refreshed team items from remote URL.", "");
                     }
                     
                     // Reload items
-                    clientThread.invokeLater(() -> {
-                        reloadItems();
-                    });
+                    clientThread.invokeLater(this::reloadItems);
                 } else {
                     log.error("Failed to refresh team items from remote URL");
                     if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
@@ -1980,14 +1940,6 @@ public class BingoPlugin extends Plugin {
         return config.showChatNotifications();
     }
 
-    public void onGameTick(GameTick event) {
-        try {
-            // ... existing code ...
-        } catch (Exception e) {
-            log.error("Error during game tick", e);
-        }
-    }
-
     /**
      * Force a complete reload of items and refresh the UI.
      * This method clears all cached items and reloads them from scratch,
@@ -1995,8 +1947,6 @@ public class BingoPlugin extends Plugin {
      */
     public void forceReloadItems() {
         String currentProfile = config.currentProfile();
-        log.info("Force reloading items for profile: {}", currentProfile);
-        
         // Clear existing items first
         clearItems();
         
@@ -2007,15 +1957,9 @@ public class BingoPlugin extends Plugin {
         if (bingoMode == BingoConfig.BingoMode.TEAM) {
             String teamCode = profileManager.getProfileTeamCode();
             if (teamCode != null && !teamCode.isEmpty()) {
-                log.info("Checking cache for team: {}", teamCode);
-                
                 // Get cached items immediately
                 List<BingoItem> cachedItems = teamService.getTeamCachedItems(teamCode);
                 if (cachedItems != null && !cachedItems.isEmpty()) {
-                    log.info("Using {} cached items immediately for team {}", 
-                        cachedItems.size(), teamCode);
-                    
-                    // Add the cached items
                     for (BingoItem item : cachedItems) {
                         items.add(item);
                         itemsByName.put(item.getName().toLowerCase(), item);
@@ -2030,26 +1974,18 @@ public class BingoPlugin extends Plugin {
                 }
             }
         }
-        
-        // Reload all items - this will also handle registering team listeners
+
         reloadItems();
-        
-        // Load saved items (obtained status)
         loadSavedItems();
         
         // For team profiles, also refresh team items
         if (bingoMode == BingoConfig.BingoMode.TEAM) {
             String teamCode = profileManager.getProfileTeamCode();
             if (teamCode != null && !teamCode.isEmpty()) {
-                log.info("Refreshing team items for profile: {}, team: {}", currentProfile, teamCode);
                 refreshTeamItems();
             }
         }
-        
-        // Update the UI again to be sure
         updateUI();
-        
-        log.info("Completed force reload of items for profile: {}", currentProfile);
     }
 
     /**
@@ -2064,21 +2000,15 @@ public class BingoPlugin extends Plugin {
         
         // Get the current config value
         String currentProfile = config.currentProfile();
-        log.info("Force config update requested: current={}, target={}", currentProfile, targetProfile);
-        
         if (targetProfile.equals(currentProfile)) {
-            log.info("Config already showing correct profile: {}", currentProfile);
             return;
         }
         
         // Try direct config update with multiple approaches
         try {
-            // Try EVERY possible config path to force the update
             String[] possibleGroups = {"bingo", "betterbingo", "bingo.profile", "betterBingo"};
             String[] possibleKeys = {"currentProfile", "profile", "bingoProfile"};
-            
-            log.info("Aggressively trying ALL possible config paths to update profile");
-            
+
             // First, unset ALL possible combinations
             for (String group : possibleGroups) {
                 for (String key : possibleKeys) {
@@ -2090,8 +2020,6 @@ public class BingoPlugin extends Plugin {
                     }
                 }
             }
-            
-            // Small delay
             try { Thread.sleep(100); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             
             // Then set with ALL possible combinations
@@ -2108,7 +2036,6 @@ public class BingoPlugin extends Plugin {
             
             // Direct reset via reflection (only attempt as a last resort)
             try {
-                // This is a VERY aggressive approach that might work if all else fails
                 // Attempt a direct reflection update to the ConfigManager's internal cache
                 Field configMapField = configManager.getClass().getDeclaredField("configMap");
                 configMapField.setAccessible(true);
@@ -2123,32 +2050,23 @@ public class BingoPlugin extends Plugin {
                         String key = group + ".currentProfile";
                         map.put(key, targetProfile);
                     }
-                    
-                    log.info("Attempted direct cache manipulation via reflection");
                 }
             } catch (Exception e) {
                 log.debug("Reflection manipulation failed (this is expected): {}", e.getMessage());
             }
-            
-            // Force a config reload by reading all config values
-            log.info("Forcing config reload...");
             configManager.getConfiguration("bingo", "currentProfile");
             configManager.getConfiguration("betterbingo", "currentProfile");
-            config.currentProfile(); // Force the config to reload
-            
-            // Small delay to ensure change propagates
+            config.currentProfile();
             try { Thread.sleep(200); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             
             // Check if it worked
             currentProfile = config.currentProfile();
             if (!targetProfile.equals(currentProfile)) {
                 log.error("Config STILL showing wrong profile after extreme measures: {}", currentProfile);
-                
-                // As an absolute last resort, try to get the BingoConfig to update via a setter
+
                 try {
                     Method setMethod = config.getClass().getMethod("setCurrentProfile", String.class);
                     setMethod.invoke(config, targetProfile);
-                    log.info("Attempted direct setter invocation on BingoConfig");
                 } catch (Exception e) {
                     log.debug("Direct setter invocation failed (this is expected): {}", e.getMessage());
                 }
@@ -2165,7 +2083,6 @@ public class BingoPlugin extends Plugin {
      * This is a safety mechanism to ensure the UI always reflects what's in Firebase.
      */
     public void refreshUIFromFirebase() {
-        // Only applicable for team profiles
         if (profileManager.getProfileBingoMode() != BingoConfig.BingoMode.TEAM) {
             return;
         }
@@ -2174,20 +2091,16 @@ public class BingoPlugin extends Plugin {
         if (teamCode == null || teamCode.isEmpty()) {
             return;
         }
-        
-        log.info("Forcing UI refresh from Firebase data for team: {}", teamCode);
-        
+
         teamService.getTeamData(teamCode)
             .thenAccept(teamData -> {
                 if (teamData == null || !teamData.containsKey("items")) {
-                    log.info("No items found in Firebase for team: {}", teamCode);
                     return;
                 }
                 
                 // Get the items data
                 Object itemsObj = teamData.get("items");
                 if (!(itemsObj instanceof Map)) {
-                    log.info("Items data in unexpected format for team: {}", teamCode);
                     return;
                 }
                 
@@ -2218,7 +2131,6 @@ public class BingoPlugin extends Plugin {
                         if (localItem != null) {
                             // If Firebase says it's obtained but our UI doesn't, update the UI
                             if (obtainedInFirebase && !localItem.isObtained()) {
-                                log.info("Syncing UI: Marking item {} as obtained based on Firebase", itemName);
                                 localItem.setObtained(true);
                                 updatedCount++;
                             }

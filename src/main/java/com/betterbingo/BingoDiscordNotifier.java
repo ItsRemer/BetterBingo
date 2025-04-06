@@ -70,9 +70,10 @@ public class BingoDiscordNotifier {
      * @param isCompletion Whether this is a completion notification
      * @param webhookUrl   The Discord webhook URL
      * @param executor     The executor service to use for async operations
+     * @param teamName     The team name (can be null for solo mode)
      */
     public void sendNotification(String message, BufferedImage screenshot, boolean isCompletion,
-                                 String webhookUrl, ScheduledExecutorService executor) {
+                                 String webhookUrl, ScheduledExecutorService executor, String teamName) {
         if (webhookUrl == null || webhookUrl.isEmpty()) {
             log.debug("Discord webhook URL not configured, skipping notification");
             return;
@@ -84,8 +85,17 @@ public class BingoDiscordNotifier {
         }
 
         DiscordNotification notification = new DiscordNotification(message, screenshot, isCompletion);
+        
+        // Pass the team name along with the notification
+        executor.execute(() -> sendDiscordNotificationAsync(notification, webhookUrl, teamName));
+    }
 
-        executor.execute(() -> sendDiscordNotificationAsync(notification, webhookUrl));
+    /**
+     * Backward compatibility method that doesn't include team name
+     */
+    public void sendNotification(String message, BufferedImage screenshot, boolean isCompletion,
+                                 String webhookUrl, ScheduledExecutorService executor) {
+        sendNotification(message, screenshot, isCompletion, webhookUrl, executor, null);
     }
 
     /**
@@ -93,13 +103,14 @@ public class BingoDiscordNotifier {
      *
      * @param notification The notification to send
      * @param webhookUrl   The Discord webhook URL
+     * @param teamName     The team name (can be null)
      */
-    private void sendDiscordNotificationAsync(DiscordNotification notification, String webhookUrl) {
+    private void sendDiscordNotificationAsync(DiscordNotification notification, String webhookUrl, String teamName) {
         try {
             if (notification.hasScreenshot()) {
-                sendDiscordMessageWithScreenshot(notification, webhookUrl);
+                sendDiscordMessageWithScreenshot(notification, webhookUrl, teamName);
             } else {
-                sendTextOnlyDiscordMessage(notification, webhookUrl);
+                sendTextOnlyDiscordMessage(notification, webhookUrl, teamName);
             }
         } catch (IOException e) {
             log.warn("Error sending Discord notification", e);
@@ -111,9 +122,10 @@ public class BingoDiscordNotifier {
      *
      * @param notification The notification to send
      * @param webhookUrl   The Discord webhook URL
+     * @param teamName     The team name (can be null)
      */
-    private void sendTextOnlyDiscordMessage(DiscordNotification notification, String webhookUrl) throws IOException {
-        JsonObject payload = createDiscordPayload(notification);
+    private void sendTextOnlyDiscordMessage(DiscordNotification notification, String webhookUrl, String teamName) throws IOException {
+        JsonObject payload = createDiscordPayload(notification, teamName);
 
         RequestBody body = RequestBody.create(
                 JSON,
@@ -137,13 +149,14 @@ public class BingoDiscordNotifier {
      *
      * @param notification The notification to send
      * @param webhookUrl   The Discord webhook URL
+     * @param teamName     The team name (can be null)
      */
-    private void sendDiscordMessageWithScreenshot(DiscordNotification notification, String webhookUrl) throws IOException {
+    private void sendDiscordMessageWithScreenshot(DiscordNotification notification, String webhookUrl, String teamName) throws IOException {
         byte[] imageBytes = imageToByteArray(notification.getScreenshot());
 
         MultipartBody.Builder requestBodyBuilder = new MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
-                .addFormDataPart("payload_json", createDiscordPayload(notification).toString());
+                .addFormDataPart("payload_json", createDiscordPayload(notification, teamName).toString());
         requestBodyBuilder.addFormDataPart(
                 "file",
                 "screenshot.png",
@@ -169,21 +182,34 @@ public class BingoDiscordNotifier {
      * Creates a Discord payload for the notification
      *
      * @param notification The notification to create a payload for
+     * @param teamName     The team name (can be null)
      * @return The Discord payload as a JsonObject
      */
-    private JsonObject createDiscordPayload(DiscordNotification notification) {
+    private JsonObject createDiscordPayload(DiscordNotification notification, String teamName) {
         JsonObject payload = new JsonObject();
 
-        payload.addProperty("username", notification.isCompletion() ?
-                "Bingo Completion" :
-                "Bingo Item Obtained");
+        String botName = notification.isCompletion() ? "Bingo Completion" : "Bingo Item Obtained";
+        
+        // If this is a team notification, include the team name in the bot name
+        if (teamName != null && !teamName.isEmpty()) {
+            botName += " - Team " + teamName;
+        }
+        
+        payload.addProperty("username", botName);
 
         String enhancedMessage = notification.getMessage();
         if (client.getLocalPlayer() != null) {
             String playerName = client.getLocalPlayer().getName();
             int worldNumber = client.getWorld();
-            enhancedMessage = String.format("%s (Player: %s, World: %d)",
-                    enhancedMessage, playerName, worldNumber);
+            
+            // Include the team name in the message if available
+            if (teamName != null && !teamName.isEmpty()) {
+                enhancedMessage = String.format("%s (Player: %s, Team: %s, World: %d)",
+                        enhancedMessage, playerName, teamName, worldNumber);
+            } else {
+                enhancedMessage = String.format("%s (Player: %s, World: %d)",
+                        enhancedMessage, playerName, worldNumber);
+            }
         }
 
         payload.addProperty("content", enhancedMessage);

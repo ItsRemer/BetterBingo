@@ -55,7 +55,6 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
         this.gson = gson;
         this.executorService = executorService;
         this.client = client;
-        log.info("FirebaseTeamStorage initialized with API endpoint: {}", API_ENDPOINT);
     }
     
     @Override
@@ -63,21 +62,15 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
         CompletableFuture<Boolean> future = new CompletableFuture<>();
         
         try {
-            log.info("Updating item obtained status for team {}: {} = {}", teamCode, itemName, obtained);
-            
             // First, find the target item name (handle groups)
             resolveTargetItemName(teamCode, itemName).thenCompose(targetItemName -> {
                 // Update the item via API
                 return updateItemViaApi(teamCode, targetItemName, obtained);
-            }).thenAccept(success -> {
-                future.complete(success);
-            }).exceptionally(e -> {
-                log.error("Error updating item obtained status", e);
+            }).thenAccept(future::complete).exceptionally(e -> {
                 future.complete(false);
                 return null;
             });
         } catch (Exception e) {
-            log.error("Error updating item obtained status", e);
             future.complete(false);
         }
         
@@ -104,7 +97,6 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
         httpClient.newCall(request).enqueue(new Callback() {
             @Override
             public void onFailure(Call call, IOException e) {
-                log.error("Failed to get team data for team {}: {}", teamCode, e.getMessage());
                 future.completeExceptionally(e);
             }
 
@@ -113,10 +105,8 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
                 try (response) {
                     if (!response.isSuccessful()) {
                         if (response.code() == 404) {
-                            log.error("Team not found in database: {}", teamCode);
                             future.completeExceptionally(new TeamNotFoundException("Team " + teamCode + " not found in database"));
                         } else {
-                            log.error("Failed to get team data for team {}: {}", teamCode, response.code());
                             future.completeExceptionally(new IOException("Failed to get team data: " + response.code()));
                         }
                         return;
@@ -124,7 +114,6 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
 
                     try {
                         String responseBody = response.body().string();
-                        log.debug("Got team data response: {}", responseBody);
                         Map<String, Object> teamData = gson.fromJson(responseBody, Map.class);
                         
                         // Ensure the team data has the teamCode included
@@ -132,17 +121,14 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
                         
                         // Make sure manualItems exists and is not null
                         if (!teamData.containsKey("manualItems") || teamData.get("manualItems") == null) {
-                            log.debug("manualItems field missing or null for team {}, setting empty string", teamCode);
                             teamData.put("manualItems", "");
                         }
                         
                         future.complete(teamData);
                     } catch (Exception e) {
-                        log.error("Error parsing team data JSON for team {}", teamCode, e);
                         future.completeExceptionally(e);
                     }
                 } catch (Exception e) {
-                    log.error("Error processing team data response for team {}", teamCode, e);
                     future.completeExceptionally(e);
                 }
             }
@@ -178,14 +164,9 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
         long accountHash = client.getAccountHash();
         if (accountHash != -1) { // Check if logged in
             teamData.addProperty("leaderAccountHash", String.valueOf(accountHash));
-            log.info("Storing leader account hash for team creation: {}", accountHash);
-        } else {
-            log.warn("Could not store leader account hash: Client not logged in or hash unavailable.");
         }
         
         String requestUrl = API_ENDPOINT + "/teams";
-        log.info("Creating team via API: URL={}, name={}, itemSourceType={}, remoteUrl={}", 
-                requestUrl, teamName, itemSourceType, remoteUrl);
         
         // Send the request to the API
         Request request = new Request.Builder()
@@ -195,13 +176,9 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
             .post(RequestBody.create(MediaType.parse("application/json"), gson.toJson(teamData)))
             .build();
         
-        log.debug("Team creation request headers: {}", request.headers());
-        log.debug("Team creation request body: {}", gson.toJson(teamData));
-        
         httpClient.newCall(request).enqueue(new Callback() {
             @Override
             public void onFailure(Call call, IOException e) {
-                log.error("Failed to create team", e);
                 future.completeExceptionally(e);
             }
             
@@ -209,7 +186,6 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
             public void onResponse(Call call, Response response) throws IOException {
                 try (ResponseBody responseBody = response.body()) {
                     String responseStr = responseBody != null ? responseBody.string() : "null response body";
-                    log.debug("Team creation response: {} with status code: {}", responseStr, response.code());
                     
                     if (response.isSuccessful() && responseBody != null) {
                         if (responseStr != null && !responseStr.isEmpty()) {
@@ -221,26 +197,21 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
                             }
                             
                             if (teamCode != null && !teamCode.isEmpty()) {
-                                log.info("Created team with code: {}", teamCode);
                                 future.complete(teamCode);
                             } else {
                                 String errorMsg = "API returned success but no valid team code in response: " + responseStr;
-                                log.error(errorMsg);
                                 future.completeExceptionally(new IOException(errorMsg));
                             }
                         } else {
                             String errorMsg = "API returned empty response";
-                            log.error(errorMsg);
                             future.completeExceptionally(new IOException(errorMsg));
                         }
                     } else {
                         String errorMsg = String.format("Failed to create team: HTTP %d - %s", response.code(), responseStr);
-                        log.error(errorMsg);
                         future.completeExceptionally(new IOException(errorMsg));
                     }
                 } catch (Exception e) {
                     String errorMsg = "Error processing team creation response: " + e.getMessage();
-                    log.error(errorMsg, e);
                     future.completeExceptionally(new IOException(errorMsg, e));
                 }
             }
@@ -262,7 +233,6 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
         httpClient.newCall(request).enqueue(new Callback() {
             @Override
             public void onFailure(Call call, IOException e) {
-                log.error("Failed to join team", e);
                 future.completeExceptionally(e);
             }
             
@@ -270,10 +240,8 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
             public void onResponse(Call call, Response response) throws IOException {
                 try (ResponseBody responseBody = response.body()) {
                     if (response.isSuccessful() && responseBody != null) {
-                        log.info("Joined team with code: {}", teamCode);
                         future.complete(true);
                     } else {
-                        log.error("Team not found: {}", teamCode);
                         future.complete(false);
                     }
                 }
@@ -307,7 +275,6 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
                                     // This item was previously obtained
                                     String itemName = (String) itemData.getOrDefault("name", entry.getKey());
                                     currentObtainedStatus.put(itemName.toLowerCase(), true);
-                                    log.debug("Found previously obtained item in Firebase: {}", itemName);
                                 }
                             }
                         }
@@ -326,7 +293,6 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
                     // CRITICAL: Preserve obtained=true status for any item that was previously obtained
                     boolean wasObtainedInFirebase = currentObtainedStatus.getOrDefault(item.getName().toLowerCase(), false);
                     if (wasObtainedInFirebase && !item.isObtained()) {
-                        log.info("PRESERVING obtained status for {} in Firebase during team update", item.getName());
                         itemData.addProperty("obtained", true);
                         madeChanges = true;
                     } else {
@@ -353,7 +319,6 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
                 }
                 
                 if (madeChanges) {
-                    log.info("Updated obtained status for some items before sending to Firebase");
                 }
                 
                 // Send the request to the API
@@ -364,14 +329,11 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
                     .put(RequestBody.create(MediaType.parse("application/json"), gson.toJson(itemsData)))
                     .build();
                 
-                log.debug("Sending team items update to API: {}", gson.toJson(itemsData));
-                
                 CompletableFuture<Boolean> putFuture = new CompletableFuture<>();
                 
                 httpClient.newCall(request).enqueue(new Callback() {
                     @Override
                     public void onFailure(Call call, IOException e) {
-                        log.error("Failed to update team items", e);
                         putFuture.complete(false);
                     }
                     
@@ -379,11 +341,9 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
                     public void onResponse(Call call, Response response) throws IOException {
                         try (ResponseBody responseBody = response.body()) {
                             if (response.isSuccessful() && responseBody != null) {
-                                log.info("Successfully updated team items for team {}", teamCode);
                                 putFuture.complete(true);
                             } else {
                                 String errorMessage = responseBody != null ? responseBody.string() : "Unknown error";
-                                log.error("Failed to update team items: {}", errorMessage);
                                 putFuture.complete(false);
                             }
                         }
@@ -392,12 +352,11 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
                 
                 return putFuture;
             } catch (Exception e) {
-                log.error("Error preparing team items update", e);
+                future.complete(false);
                 return CompletableFuture.completedFuture(false);
             }
         }).thenAccept(future::complete)
           .exceptionally(e -> {
-              log.error("Exception during getTeamData", e);
               future.complete(false);
               return null;
           });
@@ -428,7 +387,6 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
         // Add timeout to avoid hanging forever
         CompletableFuture.delayedExecutor(10, TimeUnit.SECONDS).execute(() -> {
             if (!future.isDone()) {
-                log.warn("Request to resolve target item name timed out for {}: {}", teamCode, itemName);
                 future.complete(itemName); // Return original name on timeout
             }
         });
@@ -441,7 +399,6 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
         httpClient.newCall(getRequest).enqueue(new Callback() {
             @Override
             public void onFailure(Call call, IOException e) {
-                log.error("Error resolving target item name", e);
                 future.complete(itemName); // Return original name on failure
             }
 
@@ -483,7 +440,6 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
                     // If we couldn't find a match, return the original item name
                     future.complete(itemName);
                 } catch (Exception e) {
-                    log.error("Error processing response for resolving target item name", e);
                     future.complete(itemName); // Return original name on error
                 }
             }
@@ -506,7 +462,6 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
         // Add timeout to avoid hanging forever
         CompletableFuture.delayedExecutor(15, TimeUnit.SECONDS).execute(() -> {
             if (!future.isDone()) {
-                log.warn("Request to update item timed out for {}: {}", teamCode, itemName);
                 future.complete(false); // Return failure on timeout
             }
         });
@@ -531,13 +486,10 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
                 .patch(requestBody)
                 .build();
             
-            log.debug("Sending item update to API: {} with value: {}", url, gson.toJson(updateData));
-            
             // Use the asynchronous API
             httpClient.newCall(request).enqueue(new Callback() {
                 @Override
                 public void onFailure(Call call, IOException e) {
-                    log.error("Error updating item obtained status via API", e);
                     future.complete(false);
                 }
                 
@@ -545,23 +497,17 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
                 public void onResponse(Call call, Response response) throws IOException {
                     try (ResponseBody responseBody = response.body()) {
                         if (response.isSuccessful() && responseBody != null) {
-                            String responseString = responseBody.string();
-                            log.info("Successfully updated obtained status via API for team {}: {} = {} (response: {})", 
-                                teamCode, itemName, obtained, responseString);
                             future.complete(true);
                         } else {
                             String errorMessage = responseBody != null ? responseBody.string() : "Unknown error";
-                            log.error("Failed to update item obtained status via API: HTTP {} - {}", response.code(), errorMessage);
                             future.complete(false);
                         }
                     } catch (Exception e) {
-                        log.error("Error processing response for item update", e);
                         future.complete(false);
                     }
                 }
             });
         } catch (Exception e) {
-            log.error("Error updating item obtained status via API", e);
             future.complete(false);
         }
         
@@ -607,7 +553,6 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
         CompletableFuture<List<Map<String, Object>>> future = new CompletableFuture<>();
 
         if (remoteUrl == null || remoteUrl.isEmpty()) {
-            log.warn("Remote URL is empty, returning empty item list");
             future.complete(new ArrayList<>());
             return future;
         }
@@ -616,7 +561,6 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
         String effectiveUrl = remoteUrl;
         if (effectiveUrl.contains("pastebin.com") && !effectiveUrl.contains("/raw/")) {
             effectiveUrl = effectiveUrl.replace("pastebin.com/", "pastebin.com/raw/");
-            log.info("Converted Pastebin URL to raw: {}", effectiveUrl);
         }
 
         // Create a final variable for use in the callback
@@ -627,11 +571,9 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
                 .get()
                 .build();
 
-        log.info("Fetching items from remote URL for team data: {}", finalEffectiveUrl);
         httpClient.newCall(request).enqueue(new Callback() {
             @Override
             public void onFailure(Call call, IOException e) {
-                log.error("Failed to fetch remote items for team data from URL: {}", finalEffectiveUrl, e);
                 future.completeExceptionally(e); // Propagate error
             }
 
@@ -655,15 +597,12 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
                                  itemsList.add(item);
                              });
                              
-                        log.info("Successfully fetched {} items from remote URL: {}", itemsList.size(), finalEffectiveUrl);
                         future.complete(itemsList);
                     } else {
                         String errorMsg = responseBody != null ? responseBody.string() : "Unknown error";
-                        log.error("Failed to fetch remote items for team data from URL: {} - HTTP {} - {}", finalEffectiveUrl, response.code(), errorMsg);
                         future.completeExceptionally(new IOException("Failed to fetch remote items: HTTP " + response.code()));
                     }
                 } catch (Exception e) {
-                    log.error("Error processing remote items response from URL: {}", finalEffectiveUrl, e);
                     future.completeExceptionally(e);
                 }
             }
@@ -682,8 +621,6 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
         CompletableFuture<Boolean> future = new CompletableFuture<>();
         String url = API_ENDPOINT + "/teams/" + teamCode;
         
-        log.info("Attempting to delete team data: {}", url);
-
         Request request = new Request.Builder()
                 .url(url)
                 .delete() // Use DELETE HTTP method
@@ -692,7 +629,6 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
         httpClient.newCall(request).enqueue(new Callback() {
             @Override
             public void onFailure(Call call, IOException e) {
-                log.error("Failed to send delete request for team {}: {}", teamCode, e.getMessage(), e);
                 future.complete(false); // Consider failure if request fails
             }
 
@@ -700,15 +636,12 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
             public void onResponse(Call call, Response response) throws IOException {
                 try (ResponseBody responseBody = response.body()) {
                     if (response.isSuccessful()) {
-                        log.info("Successfully deleted team data for code: {}", teamCode);
                         future.complete(true);
                     } else {
                         String errorMsg = responseBody != null ? responseBody.string() : "Unknown error";
-                        log.error("Failed to delete team {} data: HTTP {} - {}", teamCode, response.code(), errorMsg);
                         future.complete(false);
                     }
                 } catch (Exception e) {
-                    log.error("Error processing delete response for team {}: {}", teamCode, e.getMessage(), e);
                     future.complete(false);
                 }
             }
@@ -731,13 +664,10 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
             .get()
             .build();
         
-        log.info("Testing API connectivity to endpoint: {}", API_ENDPOINT);
-        
         httpClient.newCall(request).enqueue(new Callback() {
             @Override
             public void onFailure(Call call, IOException e) {
                 String message = "API connectivity test failed: " + e.getMessage();
-                log.error(message, e);
                 future.complete(message);
             }
             
@@ -746,7 +676,6 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
                 try (ResponseBody responseBody = response.body()) {
                     String responseStr = responseBody != null ? responseBody.string() : "null response body";
                     String message = String.format("API connectivity test result: HTTP %d - %s", response.code(), responseStr);
-                    log.info(message);
                     future.complete(message);
                 }
             }

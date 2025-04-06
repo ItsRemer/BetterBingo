@@ -2,7 +2,6 @@ package com.betterbingo;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
@@ -12,18 +11,21 @@ import net.runelite.api.Client;
 import javax.inject.Singleton;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 
 import javax.swing.SwingUtilities;
-import java.util.Optional;
+
 import com.google.gson.reflect.TypeToken;
 import java.lang.reflect.Type;
+import java.util.function.BiFunction;
+import java.util.function.Supplier;
 import javax.swing.JOptionPane;
 import com.google.gson.JsonSyntaxException;
+import org.jetbrains.annotations.NotNull;
 
 /**
  * Manages bingo profiles, ensuring isolation and non-interference between profiles.
@@ -33,7 +35,6 @@ import com.google.gson.JsonSyntaxException;
 public class BingoProfileManager {
     private static final String CONFIG_GROUP = "betterbingo";
     private static final String PROFILES_KEY = "profiles";
-    private static final String PROFILE_KEY = "profiles";
     private static final String DEFAULT_PROFILE = "Default";
     private static final String PROFILE_ITEM_UNLOCKS_KEY = "_itemUnlocks";
 
@@ -46,8 +47,6 @@ public class BingoProfileManager {
     private static final String CONFIG_KEY_ITEM_LIST = "manualItems";
     private static final String CONFIG_KEY_REFRESH_INTERVAL = "refreshInterval";
     private static final String CONFIG_KEY_PERSIST_OBTAINED = "persistObtained";
-    private static final String CONFIG_KEY_OBTAINED_ITEMS = "obtainedItems";
-    private static final String CONFIG_KEY_ACQUISITION_LOG = "acquisitionLog";
 
     @Inject
     private BingoConfig config;
@@ -96,7 +95,6 @@ public class BingoProfileManager {
         
         // Ensure we have a current profile
         if (config.currentProfile() == null || config.currentProfile().isEmpty()) {
-            log.info("No current profile set, initializing with default profile");
             setConfigDirectly(CONFIG_GROUP, "currentProfile", DEFAULT_PROFILE);
             
             // Ensure the default profile exists in the profile list
@@ -129,22 +127,18 @@ public class BingoProfileManager {
                 Type listType = new TypeToken<ArrayList<String>>() {}.getType();
                 List<String> profiles = gson.fromJson(profilesJson, listType);
                 List<String> result = profiles != null ? profiles : new ArrayList<>();
-                log.debug("Retrieved profiles as array: {}", result);
                 return result;
             } catch (JsonSyntaxException e) {
-                log.debug("Failed to parse profiles as array, trying alternative formats: {}", e.getMessage());
-                
                 // If that fails, try parsing as a single string
                 try {
                     String singleProfile = gson.fromJson(profilesJson, String.class);
                     if (singleProfile != null && !singleProfile.isEmpty()) {
                         List<String> result = new ArrayList<>();
                         result.add(singleProfile);
-                        log.debug("Retrieved single profile: {}", result);
                         return result;
                     }
                 } catch (JsonSyntaxException e2) {
-                    log.debug("Failed to parse as single string: {}", e2.getMessage());
+                    // Failed to parse as single string
                 }
                 
                 // If all parsing fails, try a raw approach
@@ -153,18 +147,15 @@ public class BingoProfileManager {
                     String unquoted = profilesJson.substring(1, profilesJson.length() - 1);
                     List<String> result = new ArrayList<>();
                     result.add(unquoted);
-                    log.debug("Retrieved profile from quoted string: {}", result);
                     return result;
                 }
                 
                 // Last resort: treat the entire string as a profile name
                 List<String> result = new ArrayList<>();
                 result.add(profilesJson);
-                log.debug("Using raw string as profile name: {}", result);
                 return result;
             }
         } catch (Exception e) {
-            log.error("Error retrieving profiles", e);
             return new ArrayList<>();
         }
     }
@@ -182,14 +173,12 @@ public class BingoProfileManager {
             
             // Ensure we serialize as a JSON array even for a single profile
             String profilesJson = gson.toJson(profiles);
-            log.debug("Saving profiles as JSON array: {}", profilesJson);
             
             // Save the profiles to the configuration
             configManager.setConfiguration(CONFIG_GROUP, PROFILES_KEY, profilesJson);
             
             return true;
         } catch (Exception e) {
-            log.error("Error saving profiles", e);
             return false;
         }
     }
@@ -211,7 +200,6 @@ public class BingoProfileManager {
             
             // Use the new saveProfiles method for more robust serialization
             if (!saveProfiles(profiles)) {
-                log.error("Failed to save profiles after adding {}", profileName);
                 return false;
             }
             
@@ -220,7 +208,6 @@ public class BingoProfileManager {
             
             return true;
         } catch (Exception e) {
-            log.error("Error creating profile: {}", profileName, e);
             return false;
         } finally {
             profileLock.unlock();
@@ -238,7 +225,6 @@ public class BingoProfileManager {
         try {
             List<String> profiles = getProfiles();
             if (!profiles.contains(profileName)) {
-                log.warn("Attempted to delete non-existent profile: {}", profileName);
                 return false; // Profile doesn't exist
             }
 
@@ -247,91 +233,43 @@ public class BingoProfileManager {
             if (mode == BingoConfig.BingoMode.TEAM) {
                 String teamCode = getProfileTeamCode(profileName);
                 if (teamCode != null && !teamCode.isEmpty()) {
-                    log.info("Profile '{}' is a team profile (code: {}). Checking leadership before backend deletion.", profileName, teamCode);
+                    // Check if the current user is the team leader before allowing backend deletion
+                    String leaderHashStr = getProfileKey(profileName, "leaderAccountHash");
                     long currentUserHash = client.getAccountHash();
+                    String currentUserHashStr = String.valueOf(currentUserHash);
                     
-                    if (currentUserHash == -1) {
-                         log.warn("Cannot verify leadership for team {} deletion: User not logged in or hash unavailable.", teamCode);
-                    } else {
-                        // Start asynchronous check and potential deletion
-                        final String finalTeamCode = teamCode; // Effectively final for lambda
-                        teamService.getTeamData(finalTeamCode)
-                            .thenCompose(teamDataMap -> {
-                                if (teamDataMap == null) {
-                                    log.error("Cannot verify leadership for team {}: Failed to get team data.", finalTeamCode);
-                                    return CompletableFuture.completedFuture(false); // Indicate backend delete not performed
-                                }
-                                
-                                String leaderHashStr = (String) teamDataMap.get("leaderAccountHash");
-                                if (leaderHashStr == null || leaderHashStr.isEmpty()) {
-                                    log.warn("Cannot verify leadership for team {}: Leader hash not found in team data.", finalTeamCode);
-                                     return CompletableFuture.completedFuture(false); // Indicate backend delete not performed
-                                }
-                                
-                                if (leaderHashStr.equals(String.valueOf(currentUserHash))) {
-                                    log.info("Current user ({}) is leader for team {}. Proceeding with backend deletion.", currentUserHash, finalTeamCode);
-                                    return teamService.deleteTeam(finalTeamCode); // Return the delete future
-                                } else {
-                                    log.info("Current user ({}) is not leader for team {} (leader: {}). Skipping backend deletion.", currentUserHash, finalTeamCode, leaderHashStr);
-                                     return CompletableFuture.completedFuture(false); // Indicate backend delete not performed
-                                }
-                            })
-                            .thenAccept(deleted -> {
-                                if (deleted) {
-                                    log.info("Asynchronous backend deletion for team {} completed successfully.", finalTeamCode);
-                                } else {
-                                    // This case means either user wasn't leader or delete failed
-                                    log.info("Asynchronous backend deletion for team {} was either skipped (not leader) or failed.", finalTeamCode);
-                                }
-                            })
-                            .exceptionally(ex -> {
-                                log.error("Error during leadership check or backend deletion for team {} (profile {}).", finalTeamCode, profileName, ex);
-                                return null; // Consume exception
-                            });
+                    // Only allow team deletion if current user is the team leader
+                    // This is a security measure to prevent unauthorized deletion
+                    // Need final reference for lambda
+                    if (currentUserHash != -1 && currentUserHashStr.equals(leaderHashStr)) {
+                        // Current user is the leader, proceed with backend deletion
+                        teamService.deleteTeam(teamCode);
                     }
-                } else {
-                    log.warn("Profile '{}' is TEAM mode but has no team code stored. Cannot delete from backend.", profileName);
                 }
             }
             
-            // Proceed with local profile deletion IMMEDIATELY regardless of async backend check/delete outcome
-            log.info("Proceeding with immediate local deletion of profile: {}", profileName);
-
-            // Proceed with local profile deletion
-            if (!profiles.remove(profileName)) {
-                // This shouldn't happen due to the check above, but handle defensively
-                 log.error("Failed to remove profile '{}' from list, though it was found initially.", profileName);
-                return false;
-            }
+            // Continue with normal profile deletion regardless of backend result
+            profiles.remove(profileName);
+            saveProfiles(profiles);
             
-            // Use the new saveProfiles method for more robust serialization
-            if (!saveProfiles(profiles)) {
-                log.error("Failed to save profiles after removing {}", profileName);
-                return false;
+            // If the deleted profile is the current one, switch to another (preferably Default)
+            if (config.currentProfile().equals(profileName)) {
+                String newProfile = profiles.contains(DEFAULT_PROFILE) ? DEFAULT_PROFILE : 
+                    (profiles.isEmpty() ? DEFAULT_PROFILE : profiles.get(0));
+                
+                // If we're switching to a profile that doesn't exist yet, create it
+                if (!profiles.contains(newProfile)) {
+                    profiles.add(newProfile);
+                    saveProfiles(profiles);
+                    initializeProfileSettings(newProfile);
+                }
+                
+                // Switch to the new profile
+                switchProfile(newProfile);
             }
-            
-            // Remove all profile-specific configurations
-            // configManager.unsetConfiguration(CONFIG_GROUP, profileName); // This seems to remove sub-keys too based on RL docs
-            log.debug("Removing configuration keys for profile: {}", profileName);
-            List<String> keysToRemove = new ArrayList<>();
-            String prefix = profileName + ".";
-            for (String key : configManager.getConfigurationKeys(CONFIG_GROUP + "." + profileName)) { // Iterate profile-specific keys
-                 keysToRemove.add(key); // Add the full key path like bingo.profileName.key
-            }
-            // Also remove the legacy item unlocks key if present
-            if (configManager.getConfiguration(CONFIG_GROUP, profileName + PROFILE_ITEM_UNLOCKS_KEY) != null) {
-                 keysToRemove.add(profileName + PROFILE_ITEM_UNLOCKS_KEY);
-            }
-            
-            for (String key : keysToRemove) {
-                log.debug("Unsetting config key: {}", key);
-                configManager.unsetConfiguration(CONFIG_GROUP, key);
-            }
-            log.info("Successfully deleted local profile data for: {}", profileName);
             
             return true;
         } catch (Exception e) {
-            log.error("Error deleting profile: {}", profileName, e);
             return false;
         } finally {
             profileLock.unlock();
@@ -344,105 +282,103 @@ public class BingoProfileManager {
      * @param profileKey The profile to switch to
      */
     public void switchProfile(String profileKey) {
-        log.info("Switching to profile: {}", profileKey);
-        log.info("[PROFILE_DEBUG] ===== PROFILE SWITCH INITIATED =====");
-        
-        // Only proceed if the profile actually exists
-        if (!getProfiles().contains(profileKey)) {
-            log.error("Cannot switch to non-existent profile: {}", profileKey);
+        if (!isValidProfile(profileKey) || isSameProfile(profileKey)) {
             return;
         }
-        
-        // Check if it's the same profile
-        if (profileKey.equals(config.currentProfile())) {
-            log.info("Already on profile: {}", profileKey);
-            return;
-        }
-        
+
         try {
-            // Save the current profile configuration
-            String currentProfile = config.currentProfile();
-            log.info("[PROFILE_DEBUG] Saving current profile {} before switching to {}", 
-                    currentProfile, profileKey);
-            
-            // Get profile data for debugging
-            final String currentTeamCode = getProfileTeamCode(currentProfile);
-            if (currentTeamCode != null && !currentTeamCode.isEmpty() && 
-                    getProfileBingoMode(currentProfile) == BingoConfig.BingoMode.TEAM) {
-                log.info("Unregistering team listeners for profile: {}, teamCode: {}", 
-                        currentProfile, currentTeamCode);
-                teamService.unregisterTeamListener(currentTeamCode);
-            }
-            
-            // Update the config to switch profiles - this is the key step
-            // Use the direct config write approach for more reliability
+            final String currentProfile = config.currentProfile();
+            unregisterCurrentTeamIfNeeded(currentProfile);
+
+            // Update config with the new profile
             setConfigDirectly(CONFIG_GROUP, "currentProfile", profileKey);
-            
-            // Verify config change by reading it back
-            String actualProfile = config.currentProfile();
+
+            // Verify that the config actually switched
+            final String actualProfile = config.currentProfile();
             if (!profileKey.equals(actualProfile)) {
-                log.error("CRITICAL: Profile switch failed despite direct write. Wanted: {}, Got: {}", 
-                    profileKey, actualProfile);
-            } else {
-                log.info("Profile switch config verified successful: {}", profileKey);
+                throw new RuntimeException("CRITICAL: Profile switch failed despite direct write. "
+                        + "Wanted: " + profileKey + ", Got: " + actualProfile);
             }
-            
-            // Get profile info for debugging
-            String newRemoteUrl = getProfileKey(profileKey, CONFIG_KEY_REMOTE_URL);
-            BingoConfig.ItemSourceType newSourceType = BingoConfig.ItemSourceType.valueOf(
-                getProfileKey(profileKey, CONFIG_KEY_ITEM_SOURCE_TYPE));
-            log.info("[PROFILE_DEBUG] Entering profile: {} (sourceType={}, remoteUrl={})", 
-                profileKey, newSourceType, newRemoteUrl);
-            
-            // Register team listeners for the new profile
-            final String newTeamCode = getProfileTeamCode(profileKey);
-            if (newTeamCode != null && !newTeamCode.isEmpty() && 
-                    getProfileBingoMode(profileKey) == BingoConfig.BingoMode.TEAM) {
-                log.info("Registering team listeners for profile: {}, teamCode: {}", profileKey, newTeamCode);
-                
-                // CRITICAL: Use cached items first if available to ensure immediate display
-                List<BingoItem> cachedItems = teamService.getTeamCachedItems(newTeamCode);
-                if (cachedItems != null && !cachedItems.isEmpty()) {
-                    log.info("[PROFILE_DEBUG] Found {} cached items for team {}. Using these for immediate display.", 
-                        cachedItems.size(), newTeamCode);
-                }
-                
-                // Now register the team listeners which will trigger further updates
-                registerTeamListeners(profileKey);
-                
-                // IMPORTANT IMPROVEMENT: Immediately ensure database is up-to-date 
-                // by forcing a refresh from remote URL for team profiles
-                if (newSourceType == BingoConfig.ItemSourceType.REMOTE && 
-                    newRemoteUrl != null && !newRemoteUrl.isEmpty()) {
-                    
-                    log.info("[PROFILE_DEBUG] Forcing immediate database update from remote URL: {}", newRemoteUrl);
-                    // Run this in a background thread to avoid blocking the UI
-                    new Thread(() -> {
-                        try {
-                            log.info("[PROFILE_DEBUG] Starting forced sync for team: {}", newTeamCode);
-                            CompletableFuture<Boolean> refreshFuture = teamService.refreshTeamItems(newTeamCode);
-                            
-                            // Wait for the refresh to complete (with timeout)
-                            boolean success = refreshFuture.get(15, java.util.concurrent.TimeUnit.SECONDS);
-                            
-                            if (success) {
-                                log.info("[PROFILE_DEBUG] Successfully synced database with remote URL for team: {}", newTeamCode);
-                            } else {
-                                log.warn("[PROFILE_DEBUG] Failed to sync database with remote URL for team: {}", newTeamCode);
-                            }
-                        } catch (Exception e) {
-                            log.error("[PROFILE_DEBUG] Error during forced sync for team: {}", newTeamCode, e);
-                        }
-                    }, "Profile-DB-Sync-Thread").start();
-                }
-            }
-            
-            log.info("Profile switch config update complete for: {}", profileKey);
-            log.info("[PROFILE_DEBUG] ===== PROFILE SWITCH COMPLETE =====");
+
+            // Register the new team if this profile is in TEAM mode
+            registerNewTeamIfNeeded(actualProfile);
+
         } catch (Exception e) {
-            log.error("Error during profile switch config update", e);
-            log.error("[PROFILE_DEBUG] Profile switch failed with error", e);
+            // Optionally log or rethrow as needed
         }
+    }
+
+    private boolean isValidProfile(String profileKey) {
+        return getProfiles().contains(profileKey);
+    }
+
+    private boolean isSameProfile(String profileKey) {
+        return profileKey.equals(config.currentProfile());
+    }
+
+    private void unregisterCurrentTeamIfNeeded(String currentProfile) {
+        if (isTeamProfile(currentProfile)) {
+            String teamCode = getProfileTeamCode(currentProfile);
+            if (teamCode != null && !teamCode.isEmpty()) {
+                teamService.unregisterTeamListener(teamCode);
+            }
+        }
+    }
+
+    private void registerNewTeamIfNeeded(String newProfile) {
+        if (!isTeamProfile(newProfile)) {
+            return;
+        }
+
+        // Load items from cache if any, to ensure immediate display
+        final String newTeamCode = getProfileTeamCode(newProfile);
+        if (newTeamCode == null || newTeamCode.isEmpty()) {
+            return;
+        }
+
+        List<BingoItem> cachedItems = teamService.getTeamCachedItems(newTeamCode);
+        if (cachedItems != null && !cachedItems.isEmpty()) {
+            // Handle or display cached items if necessary
+        }
+
+        // Register the listeners
+        registerTeamListeners(newProfile);
+
+        // If remote-based, trigger a refresh to ensure DB is up-to-date
+        if (isRemoteSource(newProfile)) {
+            forceTeamRefreshAsync(newTeamCode);
+        }
+    }
+
+    private boolean isTeamProfile(String profile) {
+        return getProfileBingoMode(profile) == BingoConfig.BingoMode.TEAM;
+    }
+
+    private boolean isRemoteSource(String profile) {
+        String sourceTypeStr = getProfileKey(profile, CONFIG_KEY_ITEM_SOURCE_TYPE);
+        BingoConfig.ItemSourceType sourceType = BingoConfig.ItemSourceType.valueOf(sourceTypeStr);
+
+        if (sourceType != BingoConfig.ItemSourceType.REMOTE) {
+            return false;
+        }
+
+        String remoteUrl = getProfileKey(profile, CONFIG_KEY_REMOTE_URL);
+        return remoteUrl != null && !remoteUrl.isEmpty();
+    }
+
+    private void forceTeamRefreshAsync(String teamCode) {
+        new Thread(() -> {
+            try {
+                CompletableFuture<Boolean> refreshFuture = teamService.refreshTeamItems(teamCode);
+                // Wait for the refresh to complete (with timeout)
+                boolean success = refreshFuture.get(15, TimeUnit.SECONDS);
+                if (success) {
+                    // Optionally handle success
+                }
+            } catch (Exception ignored) {
+                // Optionally handle/log
+            }
+        }, "Profile-DB-Sync-Thread").start();
     }
 
     /**
@@ -456,12 +392,10 @@ public class BingoProfileManager {
             if (bingoMode == BingoConfig.BingoMode.TEAM) {
                 String teamCode = getProfileTeamCode(profileName);
                 if (teamCode != null && !teamCode.isEmpty()) {
-                    log.info("Unregistering team listeners for profile: {}, teamCode: {}", profileName, teamCode);
                     teamService.unregisterTeamListener(teamCode);
                 }
             }
         } catch (Exception e) {
-            log.error("Error unregistering team listeners for profile: {}", profileName, e);
         }
     }
 
@@ -476,30 +410,11 @@ public class BingoProfileManager {
             if (bingoMode == BingoConfig.BingoMode.TEAM) {
                 String teamCode = getProfileTeamCode(profileName);
                 if (teamCode != null && !teamCode.isEmpty()) {
-                    log.info("Registering team listeners for profile: {}, teamCode: {}", profileName, teamCode);
                     teamService.registerTeamListener(teamCode, plugin::updateItemsFromFirebase)
                         .exceptionally(ex -> {
-                            log.error("Error registering team listener: {}", ex.getMessage(), ex);
-                            
-                            // Check explicitly for 404 errors, which indicates the team no longer exists
-                            String errorMessage = ex.getMessage();
-                            Throwable cause = ex.getCause();
-                            
-                            boolean isTeamNotFound = 
-                                // Direct check for 404 in the message
-                                (errorMessage != null && errorMessage.contains("404")) ||
-                                // Check the cause messages for 404
-                                (cause != null && cause.getMessage() != null && cause.getMessage().contains("404")) ||
-                                // Message checks for common team not found messages
-                                (errorMessage != null && (
-                                    errorMessage.contains("Team not found") || 
-                                    errorMessage.contains("no longer exists") ||
-                                    errorMessage.contains("Failed to get team data") ||
-                                    errorMessage.contains("Team data is null")
-                                ));
-                            
+                            final boolean isTeamNotFound = isIsTeamNotFound(ex);
+
                             if (isTeamNotFound) {
-                                log.error("Team not found in database while registering listeners: {}", teamCode);
                                 // Show warning to the user on the EDT
                                 final String finalTeamCode = teamCode;
                                 final String finalProfileName = profileName;
@@ -517,37 +432,7 @@ public class BingoProfileManager {
                                     
                                     if (option == JOptionPane.YES_OPTION) {
                                         // Delete the profile
-                                        if (deleteProfile(finalProfileName)) {
-                                            // Refresh the UI immediately
-                                            SwingUtilities.invokeLater(() -> {
-                                                // Update the profile dropdown in the panel
-                                                if (plugin != null) {
-                                                    plugin.getPanel().ifPresent(panel -> panel.updateProfileComboBox());
-                                                }
-                                                
-                                                JOptionPane.showMessageDialog(
-                                                    null,
-                                                    "Profile \"" + finalProfileName + "\" has been deleted.",
-                                                    "Profile Deleted",
-                                                    JOptionPane.INFORMATION_MESSAGE
-                                                );
-                                            });
-                                            
-                                            // Switch to a different profile
-                                            List<String> profiles = getProfiles();
-                                            if (!profiles.isEmpty()) {
-                                                String newProfile = profiles.get(0);
-                                                log.info("Automatically switching to profile: {} after deletion", newProfile);
-                                                switchProfile(newProfile);
-                                            }
-                                        } else {
-                                            JOptionPane.showMessageDialog(
-                                                null,
-                                                "Failed to delete profile \"" + finalProfileName + "\".",
-                                                "Error",
-                                                JOptionPane.ERROR_MESSAGE
-                                            );
-                                        }
+                                        deleteProfile(finalProfileName);
                                     }
                                 });
                             }
@@ -557,19 +442,23 @@ public class BingoProfileManager {
                 }
             }
         } catch (Exception e) {
-            log.error("Error registering team listeners for profile: {}", profileName, e);
         }
     }
 
-    /**
-     * Clears all item unlocks from the configuration.
-     */
-    private void clearItemUnlocks() {
-        for (String key : configManager.getConfigurationKeys(CONFIG_GROUP)) {
-            if (key.startsWith("itemUnlock_")) {
-                configManager.unsetConfiguration(CONFIG_GROUP, key);
-            }
-        }
+    private static boolean isIsTeamNotFound(Throwable ex) {
+        String errorMessage = ex.getMessage();
+        Throwable cause = ex.getCause();
+
+        return (errorMessage != null && errorMessage.contains("404")) ||
+        // Check the cause messages for 404
+        (cause != null && cause.getMessage() != null && cause.getMessage().contains("404")) ||
+        // Message checks for common team not found messages
+        (errorMessage != null && (
+            errorMessage.contains("Team not found") ||
+            errorMessage.contains("no longer exists") ||
+            errorMessage.contains("Failed to get team data") ||
+            errorMessage.contains("Team data is null")
+        ));
     }
 
     /**
@@ -581,8 +470,6 @@ public class BingoProfileManager {
     public boolean saveProfile(String profileName) {
         profileLock.lock();
         try {
-            log.info("Saving profile: {}", profileName);
-            
             JsonObject profileData = new JsonObject();
             profileData.addProperty("teamCode", configManager.getConfiguration(CONFIG_GROUP, "teamCode"));
             profileData.addProperty("itemSourceType", configManager.getConfiguration(CONFIG_GROUP, "itemSourceType"));
@@ -610,10 +497,8 @@ public class BingoProfileManager {
             // Save acquisition log
             saveAcquisitionLog();
             
-            log.info("Successfully saved profile: {}", profileName);
             return true;
         } catch (Exception e) {
-            log.error("Error saving profile: {}", profileName, e);
             return false;
         } finally {
             profileLock.unlock();
@@ -663,21 +548,15 @@ public class BingoProfileManager {
         // Create the team and then set the profile key once we have a team code
         return teamService.createTeam(teamName, discordWebhook, itemSourceType, remoteUrl, manualItems, refreshInterval, persistObtained)
                 .thenApply(teamCode -> {
-                    log.info("Team created successfully for profile {} with code: {}", profileName, teamCode);
-                    
                     // Set the team code in the profile config
                     if (teamCode != null && !teamCode.isEmpty()) {
                         setProfileKey(profileName, CONFIG_KEY_TEAM_CODE, teamCode);
                     } else {
-                        log.error("Received null or empty team code for profile {}", profileName);
                         throw new RuntimeException("Failed to create team: received null team code");
                     }
                     
-                    log.info("[createTeamProfile] Setting final settings for profile: {}", profileName);
-                    
                     // Set the bingo mode to TEAM
                     setProfileBingoMode(profileName, BingoConfig.BingoMode.TEAM);
-                    log.info("[createTeamProfile] Set bingoMode = TEAM for profile: {}", profileName);
                     
                     // Set the profile as active
                     config.setCurrentProfile(profileName);
@@ -688,8 +567,6 @@ public class BingoProfileManager {
                     return teamCode;
                 })
                 .exceptionally(ex -> {
-                    log.error("Failed to create team for profile {}: {}. Cleaning up profile.", profileName, ex.getMessage());
-                    
                     // Clean up the profile if team creation fails
                     try {
                         if (plugin != null) {
@@ -704,15 +581,11 @@ public class BingoProfileManager {
                         if (bingoMode == BingoConfig.BingoMode.TEAM && existingTeamCode != null && !existingTeamCode.isEmpty()) {
                             teamService.deleteTeam(existingTeamCode);
                         } else {
-                            log.warn("Profile '{}' is TEAM mode but has no team code stored. Cannot delete from backend.", profileName);
                         }
                         
-                        log.info("Proceeding with immediate local deletion of profile: {}", profileName);
+                        // Proceed with immediate local deletion of profile
                         deleteProfile(profileName);
-                        
-                        log.info("Successfully deleted local profile data for: {}", profileName);
                     } catch (Exception e) {
-                        log.error("Error cleaning up profile {} after team creation failure", profileName, e);
                     }
                     
                     // Propagate the exception
@@ -739,17 +612,12 @@ public class BingoProfileManager {
         // Initialize basic settings first
         initializeProfileSettings(profileName);
 
-        log.info("Attempting to join team {} for profile: {}", teamCode, profileName);
-
         // Join the team on the backend
         return teamService.joinTeam(teamCode)
                 .thenCompose(success -> {
                     if (success) {
-                        log.info("Successfully joined team {} for profile {}", teamCode, profileName);
                         // Fetch team data to get settings
                         return teamService.getTeamData(teamCode).thenCompose(teamData -> {
-                            log.info("Fetched team data for joined team: {}", teamCode);
-                            
                             // Now that team is created, set the final profile settings, including TEAM mode
                             profileLock.lock();
                             try {
@@ -763,7 +631,6 @@ public class BingoProfileManager {
                                 setProfileKey(profileName, CONFIG_KEY_ITEM_LIST, (String) teamData.getOrDefault("manualItems", ""));
                                 setProfileKey(profileName, CONFIG_KEY_REFRESH_INTERVAL, String.valueOf(teamData.getOrDefault("refreshInterval", config.refreshInterval())));
                                 setProfileKey(profileName, CONFIG_KEY_PERSIST_OBTAINED, String.valueOf(teamData.getOrDefault("persistObtained", config.persistObtained())));
-                                log.info("Final profile settings applied for joined team profile: {}", profileName);
                             } finally {
                                 profileLock.unlock();
                             }
@@ -771,29 +638,18 @@ public class BingoProfileManager {
                             // Switch to the newly configured profile
                             switchProfile(profileName);
                             
-                            // Since switchProfile is void, we complete the future directly
-                            log.info("Switched to joined team profile: {}", profileName);
-                            
                             // Register listener after switching
                             teamService.registerTeamListener(teamCode, plugin::updateItemsFromFirebase);
-                            
-                            // Update the UI on the EDT
-                            SwingUtilities.invokeLater(() -> {
-                                Optional<BingoPanel> panelOptional = plugin.getPanel();
-                                panelOptional.ifPresent(BingoPanel::updateProfileComboBox);
-                            });
                             
                             return CompletableFuture.completedFuture(true);
                         });
                     } else {
-                        log.warn("Failed to join team {} for profile {}. Cleaning up profile.", teamCode, profileName);
                         // If joining failed, delete the profile
                         deleteProfile(profileName);
                         return CompletableFuture.completedFuture(false);
                     }
                 })
                 .exceptionally(ex -> {
-                    log.error("Failed to join team {} for profile {}: {}. Cleaning up profile.", teamCode, profileName, ex.getMessage(), ex);
                     // Clean up the profile if joining failed
                     deleteProfile(profileName);
                     // Rethrow or handle the exception appropriately
@@ -810,17 +666,9 @@ public class BingoProfileManager {
     private void initializeProfileSettings(String profileName) {
         profileLock.lock();
         try {
-            log.debug("Initializing default settings for profile: {}", profileName);
             // Copy settings from the default config or current profile if available
             String currentProfile = config.currentProfile();
-            boolean useCurrent = !currentProfile.equals(profileName) && getProfiles().contains(currentProfile);
-
-            // Helper lambda to get config value, falling back to default
-            java.util.function.BiFunction<String, java.util.function.Supplier<String>, String> getConfigValue =
-                    (key, defaultValueSupplier) -> {
-                        String value = useCurrent ? getProfileKey(currentProfile, key) : null;
-                        return value != null ? value : defaultValueSupplier.get();
-                    };
+            final BiFunction<String, Supplier<String>, String> getConfigValue = getCurrentProfileFunction(profileName, currentProfile);
 
             // Set default values for the new profile
             String itemList = getConfigValue.apply(CONFIG_KEY_ITEM_LIST, config::manualItems);
@@ -849,10 +697,20 @@ public class BingoProfileManager {
 
             // Set default bingo mode to SOLO initially. Use .name()
             setProfileBingoMode(profileName, BingoConfig.BingoMode.SOLO);
-            log.debug("Finished initializing settings for profile: {}", profileName);
         } finally {
             profileLock.unlock();
         }
+    }
+
+    @NotNull
+    private BiFunction<String, Supplier<String>, String> getCurrentProfileFunction(String profileName, String currentProfile) {
+        boolean useCurrent = !currentProfile.equals(profileName) && getProfiles().contains(currentProfile);
+
+        // Helper lambda to get config value, falling back to default
+        return (key, defaultValueSupplier) -> {
+            String value = useCurrent ? getProfileKey(currentProfile, key) : null;
+            return value != null ? value : defaultValueSupplier.get();
+        };
     }
 
     /**
@@ -864,7 +722,6 @@ public class BingoProfileManager {
      */
     public String getProfileKey(String profileName, String key) {
         if (profileName == null || profileName.isEmpty()) {
-            log.warn("Attempted to get key '{}' for null or empty profile name", key);
             return null;
         }
         return configManager.getConfiguration(CONFIG_GROUP, profileName + "." + key);
@@ -879,7 +736,6 @@ public class BingoProfileManager {
      */
     private void setProfileKey(String profileName, String key, String value) {
         if (profileName == null || profileName.isEmpty()) {
-            log.warn("Attempted to set key '{}' for null or empty profile name", key);
             return;
         }
         configManager.setConfiguration(CONFIG_GROUP, profileName + "." + key, value);
@@ -894,7 +750,6 @@ public class BingoProfileManager {
     public String getCurrentProfileKey(String key) {
         String currentProfile = config.currentProfile();
         if (currentProfile == null || currentProfile.isEmpty()) {
-            log.warn("Current profile is null or empty when getting key '{}'", key);
             return null;
         }
         return getProfileKey(currentProfile, key);
@@ -994,15 +849,12 @@ public class BingoProfileManager {
             for (BingoConfig.ItemSourceType sourceType : BingoConfig.ItemSourceType.values()) {
                 if (sourceType.toString().equals(itemSourceType)) {
                     // If we find a match, update the stored value to use the enum name
-                    log.info("[getProfileItemSourceType] Converting stored value '{}' to enum name '{}'", 
-                            itemSourceType, sourceType.name());
                     setProfileItemSourceType(sourceType);
                     return sourceType;
                 }
             }
             
             // If the stored value is invalid and no match found, use the default
-            log.warn("[getProfileItemSourceType] Invalid source type value '{}'. Returning default MANUAL.", itemSourceType);
             BingoConfig.ItemSourceType sourceType = config.itemSourceType();
             setProfileItemSourceType(sourceType);
             return sourceType;
@@ -1100,7 +952,6 @@ public class BingoProfileManager {
      */
     public BingoConfig.BingoMode getProfileBingoMode(String profileName) {
         String bingoMode = getProfileKey(profileName, CONFIG_KEY_BINGO_MODE);
-        log.debug("[getProfileBingoMode] Read raw value for '{}.{}': {}", profileName, CONFIG_KEY_BINGO_MODE, bingoMode);
         
         if (bingoMode == null) {
             // Use the default bingo mode if not set for this profile
@@ -1117,16 +968,12 @@ public class BingoProfileManager {
             for (BingoConfig.BingoMode mode : BingoConfig.BingoMode.values()) {
                 if (mode.toString().equals(bingoMode)) {
                     // If we find a match, update the stored value to use the enum name
-                    log.info("[getProfileBingoMode] Converting stored value '{}' to enum name '{}'", 
-                            bingoMode, mode.name());
                     setProfileBingoMode(profileName, mode);
                     return mode;
                 }
             }
             
             // If we can't match the value, log a warning and return the default
-            log.warn("[getProfileBingoMode] Invalid mode value '{}' stored for profile '{}'. Returning default SOLO.",
-                    bingoMode, profileName);
             setProfileBingoMode(profileName, BingoConfig.BingoMode.SOLO);
             return BingoConfig.BingoMode.SOLO;
         }
@@ -1191,18 +1038,7 @@ public class BingoProfileManager {
     public String getProfileTeamName(String profileName) {
         return getProfileKey(profileName, CONFIG_KEY_TEAM_NAME);
     }
-    
-    /**
-     * Sets the team name for the current profile.
-     *
-     * @param teamName Team name
-     */
-    public void setProfileTeamName(String teamName) {
-        String currentProfile = config.currentProfile();
-        if (currentProfile == null || currentProfile.isEmpty()) return;
-        setProfileKey(currentProfile, CONFIG_KEY_TEAM_NAME, teamName);
-    }
-    
+
     /**
      * Gets the Discord webhook URL for the current profile.
      *
@@ -1226,43 +1062,6 @@ public class BingoProfileManager {
         if (currentProfile == null || currentProfile.isEmpty()) return;
         setProfileKey(currentProfile, CONFIG_KEY_DISCORD_WEBHOOK, discordWebhook);
     }
-    
-    /**
-     * Cleans up resources used by the profile manager.
-     * This should be called when the plugin is shutting down.
-     */
-    public void cleanup() {
-        try {
-            log.info("Cleaning up BingoProfileManager resources");
-            
-            // Save the current profile before shutting down
-            String currentProfile = config.currentProfile();
-            if (currentProfile != null && !currentProfile.isEmpty()) {
-                saveProfile(currentProfile);
-            }
-            
-            // Unregister all team listeners
-            List<String> profiles = getProfiles();
-            for (String profileName : profiles) {
-                unregisterTeamListeners(profileName);
-            }
-            
-            // Shutdown the executor service
-            executorService.shutdown();
-            try {
-                if (!executorService.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
-                    executorService.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                executorService.shutdownNow();
-                Thread.currentThread().interrupt();
-            }
-            
-            log.info("BingoProfileManager resources cleaned up successfully");
-        } catch (Exception e) {
-            log.error("Error cleaning up BingoProfileManager resources", e);
-        }
-    }
 
     /**
      * Direct method to set a configuration value that bypasses any caching or intermediate layers.
@@ -1273,44 +1072,32 @@ public class BingoProfileManager {
      * @param value The value to set
      */
     public void setConfigDirectly(String group, String key, String value) {
-        log.info("DIRECT CONFIG WRITE: Setting {}.{} = {}", group, key, value);
+        // The ConfigManager doesn't always reliably update certain values (especially currentProfile)
+        // This direct approach ensures that our configuration updates are immediate and reliable
+        
+        // First try direct configuration set
         configManager.setConfiguration(group, key, value);
         
-        // Force a small delay to ensure config change is processed
-        try {
-            Thread.sleep(100); // Increase delay for more reliable config writes
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+        // Check if the update has been applied
+        String currentValue = configManager.getConfiguration(group, key);
+        if (value.equals(currentValue)) {
+            // Success! The value has been updated.
+            return;
         }
         
-        // Double-check the change took effect if it's the currentProfile key
-        if (group.equals(CONFIG_GROUP) && key.equals("currentProfile")) {
-            String currentValue = config.currentProfile();
-            log.info("After direct write, currentProfile = {}", currentValue);
-            
-            // If value still doesn't match, try one more extreme approach
-            if (!value.equals(currentValue)) {
-                log.warn("Direct config write still failed (got: {}), attempting config force-write", currentValue);
-                
-                // Try disabling and re-enabling the config setting
-                configManager.unsetConfiguration(group, key);
-                try {
-                    Thread.sleep(100); // Increase delay for more reliable config writes
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-                
-                configManager.setConfiguration(group, key, value);
-                try {
-                    Thread.sleep(100); // Increase delay for more reliable config writes
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-                
-                // Final check
-                currentValue = config.currentProfile();
-                log.info("After forced config reset and write, currentProfile = {}", currentValue);
-            }
+        // If the direct update failed, try a more forceful approach
+        // Clear the ConfigManager's cache for this value
+        configManager.unsetConfiguration(group, key);
+        
+        // Try another direct configuration set
+        configManager.setConfiguration(group, key, value);
+        
+        // Verify one more time
+        currentValue = configManager.getConfiguration(group, key);
+        if (!value.equals(currentValue)) {
+            // If it still failed, throw a runtime exception to indicate a critical error
+            throw new RuntimeException("Failed to update configuration value after multiple attempts: " + 
+                group + "." + key + " = " + value + " (got: " + currentValue + ")");
         }
     }
 } 
