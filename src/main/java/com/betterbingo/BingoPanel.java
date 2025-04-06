@@ -12,6 +12,7 @@ import javax.swing.JScrollPane;
 import javax.swing.SwingConstants;
 import javax.swing.border.EmptyBorder;
 
+import lombok.NonNull;
 import net.runelite.client.ui.ColorScheme;
 import net.runelite.client.ui.PluginPanel;
 import net.runelite.client.ui.components.PluginErrorPanel;
@@ -35,15 +36,12 @@ import javax.swing.ButtonGroup;
 import javax.swing.JRadioButton;
 import javax.swing.JDialog;
 import javax.swing.JWindow;
-import javax.swing.Icon;
 
-import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.awt.event.ActionListener;
 import java.awt.event.MouseEvent;
-import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import javax.swing.Timer;
 import java.awt.AWTEvent;
@@ -61,7 +59,6 @@ public class BingoPanel extends PluginPanel {
     private final BingoPlugin plugin;
     private final BingoConfig config;
     private final BingoProfileManager profileManager;
-    private final BingoTeamService teamService;
 
     private final JPanel controlPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
     private final JButton resetButton = new JButton("Reset Board");
@@ -90,7 +87,6 @@ public class BingoPanel extends PluginPanel {
         this.plugin = plugin;
         this.config = config;
         this.profileManager = profileManager;
-        this.teamService = teamService;
 
         // Use a slightly smaller font for warnings to save vertical space
         Font smallFont = sourceWarningLabel.getFont().deriveFont(sourceWarningLabel.getFont().getSize() - 2f);
@@ -397,7 +393,7 @@ public class BingoPanel extends PluginPanel {
         updateProfileComboBox();
     }
 
-    @NotNull
+    @NonNull
     private JButton convertToSolo() {
         JButton convertToSoloButton = new JButton("Convert to Solo Profile");
         convertToSoloButton.setVisible(false);

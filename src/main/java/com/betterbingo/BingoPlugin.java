@@ -1885,40 +1885,64 @@ public class BingoPlugin extends Plugin {
             }
             return;
         }
+        
+        // Show notification that refresh has started
         if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
             client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
                     "Refreshing team items from remote URL...", "");
         }
         
-        // Use a background thread to avoid blocking the UI
-        executor.submit(() -> {
-            try {
-                boolean success = teamService.refreshTeamItems(teamCode)
-                    .get(30, TimeUnit.SECONDS); // Wait up to 30 seconds for the refresh to complete
-                
-                if (success) {
-                    if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
-                        client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
-                                "Successfully refreshed team items from remote URL.", "");
+        final String finalTeamCode = teamCode;
+        
+        // Make the operation fully asynchronous - don't wait for completion
+        teamService.refreshTeamItems(finalTeamCode)
+            .thenAcceptAsync(success -> {
+                // This runs after the operation completes successfully
+                clientThread.invokeLater(() -> {
+                    if (success) {
+                        log.info("Successfully refreshed team items from remote URL");
+                        if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
+                            client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
+                                    "Successfully refreshed team items from remote URL.", "");
+                        }
+                        
+                        // Reload items
+                        reloadItems();
+                    } else {
+                        log.error("Failed to refresh team items from remote URL");
+                        if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
+                            client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
+                                    "Failed to refresh team items from remote URL.", "");
+                        }
+                        
+                        // Try to reload items anyway from cache or local storage
+                        reloadItems();
+                    }
+                });
+            }, executor)
+            .exceptionally(ex -> {
+                // This runs if an exception occurs
+                clientThread.invokeLater(() -> {
+                    if (ex.getCause() instanceof TimeoutException) {
+                        log.error("Timeout while refreshing team items", ex);
+                        if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
+                            client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
+                                    "Timeout while refreshing team items. The server is taking too long to respond.", "");
+                        }
+                    } else {
+                        log.error("Error refreshing team items", ex);
+                        if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
+                            client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
+                                    "Error refreshing team items: " + ex.getMessage(), "");
+                        }
                     }
                     
-                    // Reload items
+                    // Try to reload items anyway from cache or local storage
                     clientThread.invokeLater(this::reloadItems);
-                } else {
-                    log.error("Failed to refresh team items from remote URL");
-                    if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
-                        client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
-                                "Failed to refresh team items from remote URL.", "");
-                    }
-                }
-            } catch (InterruptedException | ExecutionException | TimeoutException e) {
-                log.error("Error refreshing team items", e);
-                if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
-                    client.addChatMessage(ChatMessageType.GAMEMESSAGE, "",
-                            "Error refreshing team items: " + e.getMessage(), "");
-                }
-            }
-        });
+                });
+                
+                return null;
+            });
     }
 
     /**

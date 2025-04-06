@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.google.inject.Inject;
+import lombok.NonNull;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.api.Client;
@@ -25,7 +26,6 @@ import java.util.function.BiFunction;
 import java.util.function.Supplier;
 import javax.swing.JOptionPane;
 import com.google.gson.JsonSyntaxException;
-import org.jetbrains.annotations.NotNull;
 
 /**
  * Manages bingo profiles, ensuring isolation and non-interference between profiles.
@@ -702,7 +702,7 @@ public class BingoProfileManager {
         }
     }
 
-    @NotNull
+    @NonNull
     private BiFunction<String, Supplier<String>, String> getCurrentProfileFunction(String profileName, String currentProfile) {
         boolean useCurrent = !currentProfile.equals(profileName) && getProfiles().contains(currentProfile);
 
