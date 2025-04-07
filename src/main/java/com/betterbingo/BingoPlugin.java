@@ -1451,18 +1451,13 @@ public class BingoPlugin extends Plugin {
             log.warn("Remote URL is empty");
             return;
         }
-        
-        // Aggressively clear items before fetching remote URL
-        // This ensures we don't show manual items while waiting for the remote URL to load
+
         items.clear();
         itemsByName.clear();
-        
-        // Update UI immediately to show empty grid
+
         SwingUtilities.invokeLater(() -> {
             Optional.ofNullable(panel).ifPresent(p -> p.updateItems(items));
         });
-
-        // Handle Pastebin URLs
         if (remoteUrl.contains("pastebin.com")) {
             // Convert pastebin.com/xyz to pastebin.com/raw/xyz
             if (!remoteUrl.contains("/raw/")) {
@@ -1982,41 +1977,6 @@ public class BingoPlugin extends Plugin {
             }
         }
         updateUI();
-    }
-
-    /**
-     * Force a configuration update to ensure the profile switch takes effect
-     * This is a critical method to ensure profile switching works correctly
-     */
-    public void forceConfigUpdate(String targetProfile) {
-        if (targetProfile == null || targetProfile.isEmpty()) {
-            log.error("Attempted to update profile with null/empty profile name");
-            return;
-        }
-        
-        // Get the current config value
-        String currentProfile = config.currentProfile();
-        if (targetProfile.equals(currentProfile)) {
-            log.debug("Profile already set to {}, no update needed", targetProfile);
-            return;
-        }
-        
-        log.info("Switching profile from {} to {}", currentProfile, targetProfile);
-        
-        // Use the correct configuration key
-        configManager.setConfiguration(CONFIG_GROUP, "currentProfile", targetProfile);
-        
-        // Verify the change was applied
-        String updatedProfile = config.currentProfile();
-        if (!targetProfile.equals(updatedProfile)) {
-            log.warn("Profile update may not have been applied. Expected: {}, Current: {}", 
-                    targetProfile, updatedProfile);
-            
-            // Try with the betterbingo group as a fallback
-            configManager.setConfiguration("betterbingo", "currentProfile", targetProfile);
-        } else {
-            log.info("Successfully updated profile to: {}", targetProfile);
-        }
     }
 
     /**
