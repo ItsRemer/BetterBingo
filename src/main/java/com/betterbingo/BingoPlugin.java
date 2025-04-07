@@ -1990,87 +1990,32 @@ public class BingoPlugin extends Plugin {
      */
     public void forceConfigUpdate(String targetProfile) {
         if (targetProfile == null || targetProfile.isEmpty()) {
-            log.error("Attempted to force config update with null/empty profile");
+            log.error("Attempted to update profile with null/empty profile name");
             return;
         }
         
         // Get the current config value
         String currentProfile = config.currentProfile();
         if (targetProfile.equals(currentProfile)) {
+            log.debug("Profile already set to {}, no update needed", targetProfile);
             return;
         }
         
-        // Try direct config update with multiple approaches
-        try {
-            String[] possibleGroups = {"bingo", "betterbingo", "bingo.profile", "betterBingo"};
-            String[] possibleKeys = {"currentProfile", "profile", "bingoProfile"};
-
-            // First, unset ALL possible combinations
-            for (String group : possibleGroups) {
-                for (String key : possibleKeys) {
-                    try {
-                        log.debug("Unsetting {}.{}", group, key);
-                        configManager.unsetConfiguration(group, key);
-                    } catch (Exception e) {
-                        // Ignore errors during unset
-                    }
-                }
-            }
-            try { Thread.sleep(100); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        log.info("Switching profile from {} to {}", currentProfile, targetProfile);
+        
+        // Use the correct configuration key
+        configManager.setConfiguration(CONFIG_GROUP, "currentProfile", targetProfile);
+        
+        // Verify the change was applied
+        String updatedProfile = config.currentProfile();
+        if (!targetProfile.equals(updatedProfile)) {
+            log.warn("Profile update may not have been applied. Expected: {}, Current: {}", 
+                    targetProfile, updatedProfile);
             
-            // Then set with ALL possible combinations
-            for (String group : possibleGroups) {
-                for (String key : possibleKeys) {
-                    try {
-                        log.debug("Setting {}.{} = {}", group, key, targetProfile);
-                        configManager.setConfiguration(group, key, targetProfile);
-                    } catch (Exception e) {
-                        // Ignore errors during set
-                    }
-                }
-            }
-            
-            // Direct reset via reflection (only attempt as a last resort)
-            try {
-                // Attempt a direct reflection update to the ConfigManager's internal cache
-                Field configMapField = configManager.getClass().getDeclaredField("configMap");
-                configMapField.setAccessible(true);
-                Object configMap = configMapField.get(configManager);
-                
-                // Get the map
-                if (configMap instanceof Map) {
-                    Map<String, Object> map = (Map<String, Object>) configMap;
-                    
-                    // Attempt direct cache manipulation
-                    for (String group : possibleGroups) {
-                        String key = group + ".currentProfile";
-                        map.put(key, targetProfile);
-                    }
-                }
-            } catch (Exception e) {
-                log.debug("Reflection manipulation failed (this is expected): {}", e.getMessage());
-            }
-            configManager.getConfiguration("bingo", "currentProfile");
-            configManager.getConfiguration("betterbingo", "currentProfile");
-            config.currentProfile();
-            try { Thread.sleep(200); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-            
-            // Check if it worked
-            currentProfile = config.currentProfile();
-            if (!targetProfile.equals(currentProfile)) {
-                log.error("Config STILL showing wrong profile after extreme measures: {}", currentProfile);
-
-                try {
-                    Method setMethod = config.getClass().getMethod("setCurrentProfile", String.class);
-                    setMethod.invoke(config, targetProfile);
-                } catch (Exception e) {
-                    log.debug("Direct setter invocation failed (this is expected): {}", e.getMessage());
-                }
-            } else {
-                log.info("Config successfully updated to: {}", currentProfile);
-            }
-        } catch (Exception e) {
-            log.error("Error during force config update", e);
+            // Try with the betterbingo group as a fallback
+            configManager.setConfiguration("betterbingo", "currentProfile", targetProfile);
+        } else {
+            log.info("Successfully updated profile to: {}", targetProfile);
         }
     }
 

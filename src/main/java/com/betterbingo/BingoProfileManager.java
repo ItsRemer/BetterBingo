@@ -1,6 +1,7 @@
 package com.betterbingo;
 
 import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.google.inject.Inject;
 import lombok.NonNull;
@@ -16,6 +17,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.ScheduledExecutorService;
 
 import javax.swing.SwingUtilities;
 
@@ -75,14 +77,17 @@ public class BingoProfileManager {
      */
     private ReentrantLock profileLock;
 
+    private final ScheduledExecutorService executor;
+
     @Inject
-    public BingoProfileManager(ConfigManager configManager, BingoConfig config, Client client, BingoTeamService teamService, BingoPlugin plugin) {
+    public BingoProfileManager(ConfigManager configManager, BingoConfig config, Client client, BingoTeamService teamService, BingoPlugin plugin, ScheduledExecutorService executor) {
         this.configManager = configManager;
         this.config = config;
         this.client = client;
         this.teamService = teamService;
         this.plugin = plugin;
         this.profileLock = new ReentrantLock();
+        this.executor = executor;
         
         // Define the configuration group
         configManager.getConfiguration(CONFIG_GROUP, "version", String.class);
@@ -357,18 +362,18 @@ public class BingoProfileManager {
     }
 
     private void forceTeamRefreshAsync(String teamCode) {
-        new Thread(() -> {
+        executor.submit(() -> {
             try {
                 CompletableFuture<Boolean> refreshFuture = teamService.refreshTeamItems(teamCode);
                 // Wait for the refresh to complete (with timeout)
                 boolean success = refreshFuture.get(15, TimeUnit.SECONDS);
                 if (success) {
-                    // Optionally handle success
+                    log.debug("Successfully refreshed team items for team {}", teamCode);
                 }
-            } catch (Exception ignored) {
-                // Optionally handle/log
+            } catch (Exception e) {
+                log.debug("Error refreshing team items: {}", e.getMessage());
             }
-        }, "Profile-DB-Sync-Thread").start();
+        });
     }
 
     /**
@@ -386,6 +391,7 @@ public class BingoProfileManager {
                 }
             }
         } catch (Exception e) {
+            log.debug("Error in unregisterTeamListeners for profile {}: {}", profileName, e.getMessage());
         }
     }
 
@@ -432,6 +438,7 @@ public class BingoProfileManager {
                 }
             }
         } catch (Exception e) {
+            log.debug("Error in registerTeamListeners for profile {}: {}", profileName, e.getMessage());
         }
     }
 
@@ -576,6 +583,7 @@ public class BingoProfileManager {
                         // Proceed with immediate local deletion of profile
                         deleteProfile(profileName);
                     } catch (Exception e) {
+                        log.debug("Error deleting profile {}: {}", profileName, e.getMessage());
                     }
                     
                     // Propagate the exception

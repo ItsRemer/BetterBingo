@@ -1,6 +1,7 @@
 package com.betterbingo;
 
 import java.awt.*;
+import java.awt.event.AWTEventListener;
 import java.awt.event.MouseAdapter;
 import java.util.List;
 import javax.inject.Inject;
@@ -13,6 +14,7 @@ import javax.swing.SwingConstants;
 import javax.swing.border.EmptyBorder;
 
 import lombok.NonNull;
+import lombok.extern.slf4j.Slf4j;
 import net.runelite.client.ui.ColorScheme;
 import net.runelite.client.ui.PluginPanel;
 import net.runelite.client.ui.components.PluginErrorPanel;
@@ -45,10 +47,12 @@ import java.awt.event.MouseEvent;
 import java.util.ArrayList;
 import javax.swing.Timer;
 import java.awt.AWTEvent;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.atomic.AtomicReference;
 
+@Slf4j
 public class BingoPanel extends PluginPanel {
     private static final ImageIcon CHECK_MARK = new ImageIcon(ImageUtil.loadImageResource(BingoPlugin.class, "/check.png").getScaledInstance(24, 24, Image.SCALE_SMOOTH));
-    private static final Dimension ITEM_SIZE = new Dimension(32, 32);
     private static final int GRID_SIZE = 5; // 5x5 bingo board
     private static final int GRID_GAP = 0; // No gap between cells
     private static final int MAX_ITEMS = GRID_SIZE * GRID_SIZE; // Maximum 25 items
@@ -59,6 +63,7 @@ public class BingoPanel extends PluginPanel {
     private final BingoPlugin plugin;
     private final BingoConfig config;
     private final BingoProfileManager profileManager;
+    private final ScheduledExecutorService executor;
 
     private final JPanel controlPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
     private final JButton resetButton = new JButton("Reset Board");
@@ -78,15 +83,14 @@ public class BingoPanel extends PluginPanel {
 
     private JButton convertToSoloButton;
 
-    private static final Logger log = LoggerFactory.getLogger(BingoPanel.class);
-
     @Inject
-    public BingoPanel(ItemManager itemManager, BingoPlugin plugin, BingoConfig config, BingoProfileManager profileManager, BingoTeamService teamService) {
+    public BingoPanel(ItemManager itemManager, BingoPlugin plugin, BingoConfig config, BingoProfileManager profileManager, BingoTeamService teamService, ScheduledExecutorService executor) {
         super(false);
         this.itemManager = itemManager;
         this.plugin = plugin;
         this.config = config;
         this.profileManager = profileManager;
+        this.executor = executor;
 
         // Use a slightly smaller font for warnings to save vertical space
         Font smallFont = sourceWarningLabel.getFont().deriveFont(sourceWarningLabel.getFont().getSize() - 2f);
@@ -250,63 +254,42 @@ public class BingoPanel extends PluginPanel {
 
                 // Only switch if the profile has changed
                 if (!selectedProfile.equals(currentProfile)) {
-                    // Clear UI immediately for visual feedback
-                    itemsContainer.removeAll();
-                    JLabel loadingLabel = new JLabel("Loading profile " + selectedProfile + "...");
-                    loadingLabel.setHorizontalAlignment(SwingConstants.CENTER);
-                    loadingLabel.setForeground(Color.WHITE);
-                    loadingLabel.setFont(loadingLabel.getFont().deriveFont(Font.BOLD, 14f));
-                    itemsContainer.add(loadingLabel);
-                    revalidate();
-                    repaint();
-
-                    // Disable UI controls during switch to prevent further actions
+                    // Disable UI during profile switch to prevent multiple switches at once
                     profileComboBox.setEnabled(false);
                     resetButton.setEnabled(false);
                     remoteUpdateButton.setEnabled(false);
                     refreshTeamButton.setEnabled(false);
-
-                    // Start fresh thread for profile switch
-                    new Thread(() -> {
+                    
+                    // Use executor service instead of direct Thread creation
+                    executor.submit(() -> {
                         try {
-                            // Force config manager to use the new profile
-                            // This is the critical part that writes to the config system
+                            // Use ConfigManager to update the profile directly
                             SwingUtilities.invokeAndWait(() -> {
                                 try {
-                                    // Force the config update with the most aggressive approach
-                                    plugin.forceConfigUpdate(selectedProfile);
-
+                                    // Use proper API method to update the profile
+                                    profileManager.switchProfile(selectedProfile);
+                                    
                                     // Double-check update was successful
                                     String actualProfile = config.currentProfile();
                                     if (!selectedProfile.equals(actualProfile)) {
-                                        log.error("CRITICAL ERROR: Profile switch failed despite all attempts. Wanted: {}, Got: {}",
+                                        log.error("Profile switch failed. Wanted: {}, Got: {}",
                                                 selectedProfile, actualProfile);
                                     } else {
                                         log.info("Profile config successfully updated to: {}", selectedProfile);
                                     }
                                 } catch (Exception ex) {
-                                    log.error("Error during profile switch config update", ex);
+                                    log.error("Error during profile switch", ex);
                                 }
                             });
 
-                            // Small delay to ensure config is processed
-                            Thread.sleep(250);
-
+                            // Instead of Thread.sleep, clear and reload items immediately
+                            // The ConfigManager update is synchronous so no need to wait
                             plugin.clearItems();
                             plugin.forceReloadItems();
 
                             // Update UI on EDT
                             SwingUtilities.invokeLater(() -> {
                                 try {
-                                    // Verify profile change took effect
-                                    String actualProfile = config.currentProfile();
-                                    log.info("Profile switch complete. Config now shows: {}", actualProfile);
-
-                                    if (!selectedProfile.equals(actualProfile)) {
-                                        log.error("Profile switch failed! Wanted: {}, Got: {}",
-                                                selectedProfile, actualProfile);
-                                    }
-
                                     // Force complete UI rebuild
                                     updateGrid();
                                     updateSourceWarningLabel();
@@ -332,7 +315,7 @@ public class BingoPanel extends PluginPanel {
                                 refreshTeamButton.setEnabled(true);
                             });
                         }
-                    }, "Profile-Switch-Thread").start();
+                    });
                 }
             }
         });
@@ -891,7 +874,7 @@ public class BingoPanel extends PluginPanel {
         JScrollPane manualItemsScrollPane = new JScrollPane(manualItemsArea);
         tc.gridx = 0;
         tc.gridy = 4;
-        tc.gridwidth = 2;
+        c.gridwidth = 2;
         createTeamPanel.add(new JLabel("Manual Items (one per line):"), tc);
         tc.gridy = 5;
         createTeamPanel.add(manualItemsScrollPane, tc);
@@ -1375,8 +1358,6 @@ public class BingoPanel extends PluginPanel {
         itemPanel.add(nameLabel, BorderLayout.CENTER);
 
         panel.add(itemPanel);
-
-        // Add a small vertical gap after each item
         panel.add(Box.createVerticalStrut(2));
     }
 
@@ -1407,9 +1388,7 @@ public class BingoPanel extends PluginPanel {
             return name.split("/")[0].trim();
         }
 
-        // For long names, truncate or split into multiple lines
         if (name.length() > 12) {
-            // If the name has spaces, try to split it into multiple lines
             if (name.contains(" ")) {
                 String[] words = name.split(" ");
                 StringBuilder result = new StringBuilder("<html>");
@@ -1417,7 +1396,6 @@ public class BingoPanel extends PluginPanel {
 
                 for (String word : words) {
                     if (currentLine.length() + word.length() > 10) {
-                        // Start a new line
                         if (currentLine.length() > 0) {
                             result.append(currentLine).append("<br>");
                             currentLine = new StringBuilder();
@@ -1430,11 +1408,9 @@ public class BingoPanel extends PluginPanel {
                     currentLine.append(word);
                 }
 
-                // Add the last line
                 result.append(currentLine).append("</html>");
                 return result.toString();
             } else {
-                // No spaces, just truncate
                 return name.substring(0, 10) + "...";
             }
         }
@@ -1461,42 +1437,41 @@ public class BingoPanel extends PluginPanel {
             popup.setLocation(e.getXOnScreen(), e.getYOnScreen());
             popup.setVisible(true);
 
-            // Auto-hide the popup after 5 seconds
-            Timer timer = new Timer(5000, evt -> popup.dispose());
-            timer.setRepeats(false);
-            timer.start();
+            executor.schedule(() -> {
+                SwingUtilities.invokeLater(popup::dispose);
+            }, 5, java.util.concurrent.TimeUnit.SECONDS);
 
-            // Add a mouse listener to dispose the popup when clicked anywhere
-            Toolkit.getDefaultToolkit().addAWTEventListener(event -> {
-                if (event instanceof MouseEvent) {
-                    MouseEvent me = (MouseEvent) event;
-                    if (me.getID() == MouseEvent.MOUSE_PRESSED && !SwingUtilities.isDescendingFrom(me.getComponent(), popup)) {
-                        popup.dispose();
-                        Toolkit.getDefaultToolkit().removeAWTEventListener(Toolkit.getDefaultToolkit().getAWTEventListeners()[0]);
-                    }
-                }
-            }, AWTEvent.MOUSE_EVENT_MASK);
+            final AWTEventListener listener = getMouseEventListener(popup);
+            Toolkit.getDefaultToolkit().addAWTEventListener(listener, AWTEvent.MOUSE_EVENT_MASK);
         }
+    }
+
+    private static AWTEventListener getMouseEventListener(JWindow popup) {
+        AtomicReference<AWTEventListener> listenerRef = new AtomicReference<>();
+        AWTEventListener listener = event -> {
+            if (event instanceof MouseEvent) {
+                MouseEvent me = (MouseEvent) event;
+                if (me.getID() == MouseEvent.MOUSE_PRESSED && !SwingUtilities.isDescendingFrom(me.getComponent(), popup)) {
+                    popup.dispose();
+                    Toolkit.getDefaultToolkit().removeAWTEventListener(listenerRef.get());
+                }
+            }
+        };
+        listenerRef.set(listener);
+        return listener;
     }
 
     /**
      * Handles item source type changes and updates UI accordingly
      */
     private void handleItemSourceChange(BingoConfig.ItemSourceType newSourceType) {
-
-        // Force clear items when switching to Remote URL to prevent manual items from showing
         if (newSourceType == BingoConfig.ItemSourceType.REMOTE) {
             plugin.clearItems();
-            plugin.updateUI(); // Update UI immediately to clear the grid
+            plugin.updateUI();
         }
 
-        // Save to profile
         profileManager.setProfileItemSourceType(newSourceType);
-
-        // Force a reload of items
         plugin.reloadItems();
-
-        // Update source warning label
         updateSourceWarningLabel();
         updateButtonVisibility();
     }
