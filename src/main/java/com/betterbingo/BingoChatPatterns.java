@@ -149,6 +149,21 @@ public class BingoChatPatterns {
             itemName = itemName.replaceAll("\\s*\\(\\d+\\)$", "").trim();
         }
 
+        // Handle "quantity Item" format (e.g., "5 Bones")
+        if (itemName.matches("^\\d+\\s+.*")) {
+            itemName = itemName.replaceAll("^\\d+\\s+", "").trim();
+        }
+        
+        // Handle comma separated quantity (e.g., "1,000 Coins")
+        if (itemName.matches("^[\\d,]+\\s+.*")) {
+            itemName = itemName.replaceAll("^[\\d,]+\\s+", "").trim();
+        }
+        
+        // Handle additional formats like "Quantity x item"
+        if (itemName.matches("^\\d+\\s+x\\s+.*")) {
+            itemName = itemName.replaceAll("^\\d+\\s+x\\s+", "").trim();
+        }
+
         return itemName;
     }
 } 

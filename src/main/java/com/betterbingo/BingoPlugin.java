@@ -364,8 +364,16 @@ public class BingoPlugin extends Plugin {
         String location = antiCheat.getPlayerLocationName();
 
         for (ItemStack item : items) {
+            // Get the item composition for the item
             final ItemComposition itemComp = itemManager.getItemComposition(item.getId());
-            String itemName = itemComp.getName();
+            
+            // Check if the item is noted and get the unnoted version if it is
+            int unnoted = itemComp.getNote() != -1 ? itemComp.getLinkedNoteId() : item.getId();
+            final ItemComposition unnottedItemComp = unnoted != item.getId() ? 
+                  itemManager.getItemComposition(unnoted) : itemComp;
+            
+            // Use the unnoted version's name
+            String itemName = unnottedItemComp.getName();
 
             antiCheat.recordItemAcquisition(
                     cleanItemName(itemName),
@@ -405,8 +413,15 @@ public class BingoPlugin extends Plugin {
                 }
 
                 if (pattern.isMultiItem()) {
+                    // Split by comma or "and" to get individual items
                     String[] parts = extractedText.split(",|\\sand\\s");
                     for (String part : parts) {
+                        // Skip empty parts
+                        if (part == null || part.trim().isEmpty()) {
+                            continue;
+                        }
+                        
+                        // Clean the item name to remove quantity indicators
                         String itemName = cleanItemName(part);
                         if (itemName != null && !itemName.isEmpty()) {
                             antiCheat.recordItemAcquisition(itemName, method, sourceDetails, location);
@@ -414,6 +429,7 @@ public class BingoPlugin extends Plugin {
                         }
                     }
                 } else {
+                    // Clean the item name to remove quantity indicators
                     String itemName = cleanItemName(extractedText);
                     if (itemName != null && !itemName.isEmpty()) {
                         antiCheat.recordItemAcquisition(itemName, method, sourceDetails, location);
@@ -464,8 +480,16 @@ public class BingoPlugin extends Plugin {
 
         final String finalNpcName = npcName;
         clientThread.invoke(() -> {
+            // Get the item composition for the item
             final ItemComposition itemComp = itemManager.getItemComposition(item.getId());
-            String itemName = itemComp.getName();
+            
+            // Check if the item is noted and get the unnoted version if it is
+            int unnoted = itemComp.getNote() != -1 ? itemComp.getLinkedNoteId() : item.getId();
+            final ItemComposition unnottedItemComp = unnoted != item.getId() ? 
+                  itemManager.getItemComposition(unnoted) : itemComp;
+            
+            // Use the unnoted version's name
+            String itemName = unnottedItemComp.getName();
             String location = antiCheat.getPlayerLocationName();
 
             antiCheat.recordItemAcquisition(
