@@ -77,7 +77,7 @@ public class BingoItem
         item.setAlternativeNames(alternatives);
         
         // Try to set the item ID from the first item in the group
-        if (group.getItemNames().size() > 0) {
+        if (!group.getItemNames().isEmpty()) {
             String firstItemName = group.getItemNames().get(0);
             net.runelite.http.api.item.ItemPrice itemPrice = lookupItemByName(firstItemName, itemManager);
             if (itemPrice != null) {

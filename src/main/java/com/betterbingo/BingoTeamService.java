@@ -44,8 +44,7 @@ public class BingoTeamService {
     private final net.runelite.client.game.ItemManager itemManager;
     private final TeamStorageFactory storageFactory;
     private final FirebaseTeamStorage teamStorage;
-    private final net.runelite.client.config.ConfigManager configManager;
-    
+
     // Flag to prevent Firebase updates during initial load
     private final Map<String, Boolean> initialLoadingTeams = new ConcurrentHashMap<>();
 
@@ -67,7 +66,6 @@ public class BingoTeamService {
         this.itemManager = itemManager;
         this.storageFactory = storageFactory;
         this.teamStorage = teamStorage;
-        this.configManager = configManager;
 
         // Schedule cache cleanup task to run every hour
         this.executorService.scheduleAtFixedRate(
@@ -178,7 +176,7 @@ public class BingoTeamService {
             return future;
         }
         
-        return teamStorage.updateItemObtained(teamCode, itemName, obtained)
+        return teamStorage.updateItemObtained(teamCode, itemName, true)
             .thenApply(success -> success)
             .exceptionally(e -> false);
     }
@@ -341,9 +339,7 @@ public class BingoTeamService {
 
                                         // Update the storage
                                         updateTeamItems(teamCode, updatedItems)
-                                            .thenAccept(success -> {
-                                                initialLoadingTeams.remove(teamCode);
-                                            })
+                                            .thenAccept(success -> initialLoadingTeams.remove(teamCode))
                                             .exceptionally(ex -> {
                                                 initialLoadingTeams.remove(teamCode);
                                                 return null;
@@ -417,22 +413,21 @@ public class BingoTeamService {
      * Deletes a team from the backend storage.
      *
      * @param teamCode The code of the team to delete.
-     * @return A CompletableFuture indicating success or failure.
      */
-    public CompletableFuture<Boolean> deleteTeam(String teamCode) {
-        return teamStorage.deleteTeam(teamCode)
-            .thenApply(success -> {
-                // Clean up local cache regardless of backend success
-                teamItemsCache.remove(teamCode);
-                teamListeners.remove(teamCode);
-                return success;
-            })
-            .exceptionally(e -> {
-                // Clean up local cache even on exception
-                teamItemsCache.remove(teamCode);
-                teamListeners.remove(teamCode);
-                return false; // Indicate failure
-            });
+    public void deleteTeam(String teamCode) {
+        teamStorage.deleteTeam(teamCode)
+                .thenApply(success -> {
+                    // Clean up local cache regardless of backend success
+                    teamItemsCache.remove(teamCode);
+                    teamListeners.remove(teamCode);
+                    return success;
+                })
+                .exceptionally(e -> {
+                    // Clean up local cache even on exception
+                    teamItemsCache.remove(teamCode);
+                    teamListeners.remove(teamCode);
+                    return false; // Indicate failure
+                });
     }
 
     /**
@@ -495,9 +490,6 @@ public class BingoTeamService {
                         }
                     }
                 });
-
-                // Return early - the async remote URL fetch will handle the rest
-                return;
             } else if (teamData.getManualItems() != null && !teamData.getManualItems().isEmpty()) {
                 // Parse manual items asynchronously
                 parseManualItemsAsync(teamData.getManualItems()).thenAccept(manualItems -> {
@@ -601,9 +593,7 @@ public class BingoTeamService {
         activeRemoteUrlRequests.put(requestKey, future);
 
         // Make sure to remove it when done
-        future.whenComplete((result, ex) -> {
-            activeRemoteUrlRequests.remove(requestKey);
-        });
+        future.whenComplete((result, ex) -> activeRemoteUrlRequests.remove(requestKey));
 
         // Execute the request
         executeRemoteUrlRequest(normalizedUrl, future);
@@ -916,8 +906,8 @@ public class BingoTeamService {
         // Split by newlines or commas
         String[] itemNames = manualItems.split("[\\r\\n,]+");
 
-        for (int i = 0; i < itemNames.length; i++) {
-            String itemName = itemNames[i].trim();
+        for (String name : itemNames) {
+            String itemName = name.trim();
             if (!itemName.isEmpty()) {
                 try {
                     // Check if this is a group item (contains colons)

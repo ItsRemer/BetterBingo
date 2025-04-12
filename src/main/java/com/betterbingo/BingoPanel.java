@@ -39,13 +39,9 @@ import javax.swing.JRadioButton;
 import javax.swing.JDialog;
 import javax.swing.JWindow;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.awt.event.ActionListener;
 import java.awt.event.MouseEvent;
 import java.util.ArrayList;
-import javax.swing.Timer;
 import java.awt.AWTEvent;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.atomic.AtomicReference;
@@ -142,21 +138,15 @@ public class BingoPanel extends PluginPanel {
         // Initialize control panel
         resetButton.setToolTipText("Reset all bingo progress");
         resetButton.setFocusPainted(false);
-        resetButton.addActionListener(e -> {
-            plugin.resetBingoBoard(true);
-        });
+        resetButton.addActionListener(e -> plugin.resetBingoBoard(true));
 
         remoteUpdateButton.setToolTipText("Update bingo items from Remote URL (Pastebin)");
         remoteUpdateButton.setFocusPainted(false);
-        remoteUpdateButton.addActionListener(e -> {
-            plugin.updateRemoteItemsManually();
-        });
+        remoteUpdateButton.addActionListener(e -> plugin.updateRemoteItemsManually());
 
         refreshTeamButton.setToolTipText("Refresh team items from the remote URL");
         refreshTeamButton.setFocusPainted(false);
-        refreshTeamButton.addActionListener(e -> {
-            plugin.refreshTeamItems();
-        });
+        refreshTeamButton.addActionListener(e -> plugin.refreshTeamItems());
 
         syncFirebaseButton.setToolTipText("Sync from Database");
         syncFirebaseButton.setFocusPainted(false);
@@ -320,9 +310,7 @@ public class BingoPanel extends PluginPanel {
             }
         });
 
-        newProfileButton.addActionListener(e -> {
-            showNewProfileDialog();
-        });
+        newProfileButton.addActionListener(e -> showNewProfileDialog());
 
         deleteProfileButton.addActionListener(e -> {
             String selectedProfile = (String) profileComboBox.getSelectedItem();
@@ -368,9 +356,7 @@ public class BingoPanel extends PluginPanel {
             }
         });
 
-        profileSettingsButton.addActionListener(e -> {
-            showProfileSettingsDialog();
-        });
+        profileSettingsButton.addActionListener(e -> showProfileSettingsDialog());
 
         // Initial update
         updateProfileComboBox();
@@ -393,27 +379,25 @@ public class BingoPanel extends PluginPanel {
             if (confirm == JOptionPane.YES_OPTION) {
                 String currentProfile = (String) profileComboBox.getSelectedItem();
                 plugin.convertTeamToSoloProfile(currentProfile)
-                        .thenAccept(success -> {
-                            SwingUtilities.invokeLater(() -> {
-                                if (success) {
-                                    JOptionPane.showMessageDialog(
-                                            this,
-                                            "Profile successfully converted to solo mode.",
-                                            "Success",
-                                            JOptionPane.INFORMATION_MESSAGE
-                                    );
-                                    plugin.reloadItems();
-                                    updateProfileComboBox();
-                                } else {
-                                    JOptionPane.showMessageDialog(
-                                            this,
-                                            "Failed to convert profile to solo mode.",
-                                            "Error",
-                                            JOptionPane.ERROR_MESSAGE
-                                    );
-                                }
-                            });
-                        });
+                        .thenAccept(success -> SwingUtilities.invokeLater(() -> {
+                            if (success) {
+                                JOptionPane.showMessageDialog(
+                                        this,
+                                        "Profile successfully converted to solo mode.",
+                                        "Success",
+                                        JOptionPane.INFORMATION_MESSAGE
+                                );
+                                plugin.reloadItems();
+                                updateProfileComboBox();
+                            } else {
+                                JOptionPane.showMessageDialog(
+                                        this,
+                                        "Failed to convert profile to solo mode.",
+                                        "Error",
+                                        JOptionPane.ERROR_MESSAGE
+                                );
+                            }
+                        }));
             }
         });
         return convertToSoloButton;
@@ -1077,9 +1061,7 @@ public class BingoPanel extends PluginPanel {
             dialog.dispose();
         });
 
-        cancelButton.addActionListener(e -> {
-            dialog.dispose();
-        });
+        cancelButton.addActionListener(e -> dialog.dispose());
 
         // Set dialog properties
         dialog.pack();
@@ -1176,14 +1158,12 @@ public class BingoPanel extends PluginPanel {
 
                     // Create the team profile and handle async results properly
                     profileManager.createTeamProfile(profileName, teamName, webhook, itemSourceType, remoteUrl, manualItems, (int) refreshIntervalSpinner.getValue(), persistObtained)
-                            .thenAccept(teamCode -> {
-                                SwingUtilities.invokeLater(() -> {
-                                    updateProfileComboBox();
-                                    JOptionPane.showMessageDialog(this,
-                                            "Team created successfully!\nTeam Code: " + teamCode + "\n\nShare this code with your teammates.",
-                                            "Team Created", JOptionPane.INFORMATION_MESSAGE);
-                                });
-                            })
+                            .thenAccept(teamCode -> SwingUtilities.invokeLater(() -> {
+                                updateProfileComboBox();
+                                JOptionPane.showMessageDialog(this,
+                                        "Team created successfully!\nTeam Code: " + teamCode + "\n\nShare this code with your teammates.",
+                                        "Team Created", JOptionPane.INFORMATION_MESSAGE);
+                            }))
                             .exceptionally(ex -> {
                                 SwingUtilities.invokeLater(() -> {
                                     updateProfileComboBox();
@@ -1437,9 +1417,7 @@ public class BingoPanel extends PluginPanel {
             popup.setLocation(e.getXOnScreen(), e.getYOnScreen());
             popup.setVisible(true);
 
-            executor.schedule(() -> {
-                SwingUtilities.invokeLater(popup::dispose);
-            }, 5, java.util.concurrent.TimeUnit.SECONDS);
+            executor.schedule(() -> SwingUtilities.invokeLater(popup::dispose), 5, java.util.concurrent.TimeUnit.SECONDS);
 
             final AWTEventListener listener = getMouseEventListener(popup);
             Toolkit.getDefaultToolkit().addAWTEventListener(listener, AWTEvent.MOUSE_EVENT_MASK);

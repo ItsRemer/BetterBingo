@@ -28,7 +28,6 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
 
     private final OkHttpClient httpClient;
     private final Gson gson;
-    private final ScheduledExecutorService executorService;
     private final Random random = new Random();
     private final Client client;
 
@@ -50,7 +49,6 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
             .build();
             
         this.gson = gson;
-        this.executorService = executorService;
         this.client = client;
     }
     
@@ -185,7 +183,7 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
                     String responseStr = responseBody != null ? responseBody.string() : "null response body";
                     
                     if (response.isSuccessful() && responseBody != null) {
-                        if (responseStr != null && !responseStr.isEmpty()) {
+                        if (!responseStr.isEmpty()) {
                             JsonObject responseObj = gson.fromJson(responseStr, JsonObject.class);
                             String teamCode = null;
                             

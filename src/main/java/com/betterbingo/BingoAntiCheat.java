@@ -28,13 +28,19 @@ import java.util.Set;
 @Singleton
 public class BingoAntiCheat
 {
-    private static final String CONFIG_GROUP = "bingo";
+    // Match the config group with BingoPlugin
+    private static final String CONFIG_GROUP = BingoPlugin.CONFIG_GROUP;
     private static final String CONFIG_KEY_ACQUISITION_LOG = "acquisitionLog";
+    
+    // Source detail format constants
+    private static final String SOURCE_DETAIL_FORMAT = "%s (Player: %s, World: %d, Type: %s)";
+    private static final String PLAYER_LABEL = "Player";
+    private static final String WORLD_LABEL = "World";
+    private static final String TYPE_LABEL = "Type";
     
     private final Client client;
     private final BingoConfig config;
-    private final ItemManager itemManager;
-    
+
     @Inject
     private ConfigManager configManager;
     
@@ -93,7 +99,6 @@ public class BingoAntiCheat
     {
         this.client = client;
         this.config = config;
-        this.itemManager = itemManager;
     }
 
     /**
@@ -112,7 +117,7 @@ public class BingoAntiCheat
 
         // Create enhanced source details
         String enhancedSourceDetails = String.format(
-                "%s (Player: %s, World: %d, Type: %s)",
+                SOURCE_DETAIL_FORMAT,
                 sourceDetails,
                 getCurrentPlayerName(),
                 getCurrentWorldNumber(),

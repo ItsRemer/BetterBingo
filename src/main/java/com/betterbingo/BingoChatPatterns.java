@@ -3,14 +3,39 @@ package com.betterbingo;
 import java.util.Arrays;
 import java.util.List;
 import java.util.function.Function;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import lombok.Getter;
+import net.runelite.api.MessageNode;
+import net.runelite.api.ChatMessageType;
+import net.runelite.api.events.ChatMessage;
+import net.runelite.api.Constants;
 
 /**
  * Class containing patterns for matching chat messages related to item drops
  * Used by the Bingo plugin to detect when items are obtained
  */
 public class BingoChatPatterns {
+
+    // Constants for commonly used chat patterns
+    public static final String VALUABLE_DROP_PREFIX = "Valuable drop:";
+    public static final String COLLECTION_LOG_PREFIX = "New item added to your collection log:";
+    public static final String PET_DROP_PREFIX = "You have a funny feeling like";
+    public static final String CHEST_FIND_PREFIX = "You open the chest and find:";
+    public static final String LOOT_PREFIX = "You find some loot:";
+    
+    // Constants for raid names
+    public static final String CHAMBERS_OF_XERIC = "Chambers of Xeric";
+    public static final String THEATRE_OF_BLOOD = "Theatre of Blood";
+    public static final String TOMBS_OF_AMASCUT = "Tombs of Amascut";
+
+    // Precompiled regex patterns for item name cleaning
+    private static final Pattern QUANTITY_X_PATTERN = Pattern.compile("\\d+\\s*x\\s+(.+)");
+    private static final Pattern X_QUANTITY_PATTERN = Pattern.compile("(.+?)\\s+x\\s+\\d+");
+    private static final Pattern NUMBERED_PATTERN = Pattern.compile("^[\\d,]+\\s+(.+)");
+    private static final Pattern PARENTHESIS_PATTERN = Pattern.compile("(.+?)\\s*\\(\\d+\\)$");
+    private static final Pattern COMBINED_QUANTITY_PATTERN = Pattern.compile("^(?:\\d+(?:,\\d+)*\\s+|\\d+x\\s+)(.*)", Pattern.CASE_INSENSITIVE);
 
     /**
      * Represents a pattern for matching chat messages related to item drops
@@ -41,26 +66,26 @@ public class BingoChatPatterns {
      */
     public static final List<ChatMessagePattern> CHAT_PATTERNS = Arrays.asList(
             // Regular drops
-            new ChatMessagePattern("Valuable drop:",
+            new ChatMessagePattern(VALUABLE_DROP_PREFIX,
                     message -> message.substring(message.indexOf(":") + 2), false),
             new ChatMessagePattern("You receive a drop:",
                     message -> message.substring(message.indexOf(":") + 2), false),
 
             // Pet drops
-            new ChatMessagePattern("You have a funny feeling like",
+            new ChatMessagePattern(PET_DROP_PREFIX,
                     message -> message.substring(0, message.indexOf("like you") - 1)
                             .replace("You have a funny feeling ", ""), false),
 
             // Collection log
-            new ChatMessagePattern("New item added to your collection log:",
+            new ChatMessagePattern(COLLECTION_LOG_PREFIX,
                     message -> message.substring(message.indexOf(":") + 2), false),
 
             // Raids drops with specific format
             new ChatMessagePattern("- ",
                     message -> {
-                        if (message.contains("Chambers of Xeric") ||
-                                message.contains("Theatre of Blood") ||
-                                message.contains("Tombs of Amascut")) {
+                        if (message.contains(CHAMBERS_OF_XERIC) ||
+                                message.contains(THEATRE_OF_BLOOD) ||
+                                message.contains(TOMBS_OF_AMASCUT)) {
                             return message.substring(message.indexOf("- ") + 2);
                         }
                         return null;
@@ -71,9 +96,9 @@ public class BingoChatPatterns {
                     message -> message.substring(message.indexOf(":") + 2), true),
 
             // Chest opening messages
-            new ChatMessagePattern("You open the chest and find:",
+            new ChatMessagePattern(CHEST_FIND_PREFIX,
                     message -> message.substring(message.indexOf("find:") + 6), true),
-            new ChatMessagePattern("You find some loot:",
+            new ChatMessagePattern(LOOT_PREFIX,
                     message -> message.substring(message.indexOf("loot:") + 6), true),
             new ChatMessagePattern("Your loot is:",
                     message -> message.substring(message.indexOf("is:") + 4), true),
@@ -132,36 +157,22 @@ public class BingoChatPatterns {
 
         String itemName = rawItemName.trim();
 
-        // Handle "x quantity" format (e.g., "5 x Bones")
-        if (itemName.contains(" x ")) {
-            if (itemName.indexOf("x ") > 0) {
-                itemName = itemName.substring(itemName.indexOf("x ") + 2).trim();
-            }
+        // Single optimized pattern to handle common quantity formats
+        Matcher combinedMatcher = COMBINED_QUANTITY_PATTERN.matcher(itemName);
+        if (combinedMatcher.matches()) {
+            return combinedMatcher.group(1);
         }
 
-        // Handle "quantity x" format (e.g., "5x Bones")
-        if (itemName.matches(".*\\d+x .*")) {
-            itemName = itemName.replaceAll("\\d+x ", "").trim();
+        // Handle "x quantity" format (e.g., "5 x Bones")
+        Matcher xQuantityMatcher = X_QUANTITY_PATTERN.matcher(itemName);
+        if (xQuantityMatcher.matches()) {
+            return xQuantityMatcher.group(1);
         }
 
         // Handle "Item (quantity)" format (e.g., "Bones (5)")
-        if (itemName.matches(".*\\(\\d+\\)$")) {
-            itemName = itemName.replaceAll("\\s*\\(\\d+\\)$", "").trim();
-        }
-
-        // Handle "quantity Item" format (e.g., "5 Bones")
-        if (itemName.matches("^\\d+\\s+.*")) {
-            itemName = itemName.replaceAll("^\\d+\\s+", "").trim();
-        }
-        
-        // Handle comma separated quantity (e.g., "1,000 Coins")
-        if (itemName.matches("^[\\d,]+\\s+.*")) {
-            itemName = itemName.replaceAll("^[\\d,]+\\s+", "").trim();
-        }
-        
-        // Handle additional formats like "Quantity x item"
-        if (itemName.matches("^\\d+\\s+x\\s+.*")) {
-            itemName = itemName.replaceAll("^\\d+\\s+x\\s+", "").trim();
+        Matcher parenthesisMatcher = PARENTHESIS_PATTERN.matcher(itemName);
+        if (parenthesisMatcher.matches()) {
+            return parenthesisMatcher.group(1);
         }
 
         return itemName;

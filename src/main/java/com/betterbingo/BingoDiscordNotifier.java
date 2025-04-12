@@ -28,7 +28,6 @@ public class BingoDiscordNotifier {
 
     private final Client client;
     private final OkHttpClient okHttpClient;
-    private final Gson gson;
 
     /**
      * Represents a notification to be sent to Discord
@@ -59,7 +58,6 @@ public class BingoDiscordNotifier {
     public BingoDiscordNotifier(Client client, OkHttpClient okHttpClient, Gson gson) {
         this.client = client;
         this.okHttpClient = okHttpClient;
-        this.gson = gson;
     }
 
     /**
@@ -197,11 +195,19 @@ public class BingoDiscordNotifier {
         
         payload.addProperty("username", botName);
 
+        final String enhancedMessage = getDiscordNotifier(notification, teamName);
+
+        payload.addProperty("content", enhancedMessage);
+        payload.add("embeds", new JsonArray());
+        return payload;
+    }
+
+    private String getDiscordNotifier(DiscordNotification notification, String teamName) {
         String enhancedMessage = notification.getMessage();
         if (client.getLocalPlayer() != null) {
             String playerName = client.getLocalPlayer().getName();
             int worldNumber = client.getWorld();
-            
+
             // Include the team name in the message if available
             if (teamName != null && !teamName.isEmpty()) {
                 enhancedMessage = String.format("%s (Player: %s, Team: %s, World: %d)",
@@ -211,10 +217,7 @@ public class BingoDiscordNotifier {
                         enhancedMessage, playerName, worldNumber);
             }
         }
-
-        payload.addProperty("content", enhancedMessage);
-        payload.add("embeds", new JsonArray());
-        return payload;
+        return enhancedMessage;
     }
 
     /**

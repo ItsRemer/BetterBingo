@@ -1,7 +1,6 @@
 package com.betterbingo;
 
 import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.google.inject.Inject;
 import lombok.NonNull;
@@ -50,19 +49,19 @@ public class BingoProfileManager {
     private static final String CONFIG_KEY_PERSIST_OBTAINED = "persistObtained";
 
     @Inject
-    private BingoConfig config;
+    private final BingoConfig config;
 
     @Inject
-    private ConfigManager configManager;
+    private final ConfigManager configManager;
 
     @Inject
-    private Client client;
+    private final Client client;
 
     @Inject
-    private BingoPlugin plugin;
+    private final BingoPlugin plugin;
 
     @Inject
-    private BingoTeamService teamService;
+    private final BingoTeamService teamService;
 
     private final ExecutorService executorService = Executors.newSingleThreadExecutor();
     
@@ -75,7 +74,7 @@ public class BingoProfileManager {
     /**
      * A lock to ensure thread safety when accessing profiles.
      */
-    private ReentrantLock profileLock;
+    private final ReentrantLock profileLock;
 
     private final ScheduledExecutorService executor;
 
@@ -123,8 +122,7 @@ public class BingoProfileManager {
                 // First try parsing as a string array
                 Type listType = new TypeToken<ArrayList<String>>() {}.getType();
                 List<String> profiles = gson.fromJson(profilesJson, listType);
-                List<String> result = profiles != null ? profiles : new ArrayList<>();
-                return result;
+                return profiles != null ? profiles : new ArrayList<>();
             } catch (JsonSyntaxException e) {
                 // If that fails, try parsing as a single string
                 try {

@@ -43,32 +43,23 @@ import net.runelite.http.api.item.ItemPrice;
 import okhttp3.*;
 import com.google.gson.Gson;
 import java.util.Map;
-
 import net.runelite.api.ItemComposition;
 import net.runelite.api.NPC;
-
 import java.util.Collection;
-
 import net.runelite.api.events.ActorDeath;
 import net.runelite.api.Actor;
 import net.runelite.api.events.ItemSpawned;
-
 import java.util.HashSet;
 import java.util.Set;
-
 import java.util.function.Consumer;
 import java.util.HashMap;
-
 import java.io.IOException;
-
 import java.util.concurrent.CompletableFuture;
 import java.util.Optional;
-
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-
 import net.runelite.client.chat.ChatMessageManager;
 import net.runelite.client.chat.QueuedMessage;
+import java.util.Collections;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Bingo Plugin for RuneLite
@@ -76,7 +67,6 @@ import net.runelite.client.chat.QueuedMessage;
  * Supports loading items from Pastebin for easy sharing
  */
 @Slf4j
-@SuppressWarnings({"deprecation", "unchecked"})
 @PluginDescriptor(
         name = "Bingo",
         description = "Track items for bingo events. Supports Pastebin for easy sharing.",
@@ -84,10 +74,16 @@ import net.runelite.client.chat.QueuedMessage;
 )
 public class BingoPlugin extends Plugin {
 
-    private static final String CONFIG_GROUP = "bingo";
+    // Use the class's name for the config group following RuneLite convention
+    static final String CONFIG_GROUP = "betterbingo";
     private static final String CONFIG_KEY_OBTAINED_ITEMS = "obtainedItems";
     private static final int GRID_SIZE = 5;
     private static final int MAX_ITEMS = 100;
+    
+    // Chat message detection constants
+    private static final String COLLECTION_LOG_IDENTIFIER = "collection log";
+    private static final String CHEST_IDENTIFIER = "chest";
+    private static final String LOOT_IDENTIFIER = "loot";
 
     @Inject
     private Client client;
@@ -125,10 +121,10 @@ public class BingoPlugin extends Plugin {
     private ChatMessageManager chatMessageManager;
 
     @Getter
-    private final List<BingoItem> items = new ArrayList<>();
+    private final List<BingoItem> items = Collections.synchronizedList(new ArrayList<>());
 
-    private final Map<String, BingoItem> itemsByName = new HashMap<>();
-    private final Set<Integer> recentlyKilledNpcs = new HashSet<>();
+    private final Map<String, BingoItem> itemsByName = new ConcurrentHashMap<>();
+    private final Set<Integer> recentlyKilledNpcs = Collections.newSetFromMap(new ConcurrentHashMap<>());
     private BingoPanel panel;
     private NavigationButton navButton;
 
@@ -387,7 +383,11 @@ public class BingoPlugin extends Plugin {
 
     @Subscribe
     public void onChatMessage(net.runelite.api.events.ChatMessage event) {
-        if (event.getType() != ChatMessageType.GAMEMESSAGE && event.getType() != ChatMessageType.SPAM) {
+        // Check for game messages and spam messages which might contain item drops
+        if (event.getType() != ChatMessageType.GAMEMESSAGE && 
+            event.getType() != ChatMessageType.SPAM && 
+            event.getType() != ChatMessageType.MESBOX && 
+            event.getType() != ChatMessageType.CONSOLE) {
             return;
         }
 
@@ -404,12 +404,12 @@ public class BingoPlugin extends Plugin {
                 BingoAntiCheat.AcquisitionMethod method = BingoAntiCheat.AcquisitionMethod.CHAT_MESSAGE;
                 String sourceDetails = "Chat message: " + message;
 
-                if (message.contains("collection log")) {
+                if (message.contains(COLLECTION_LOG_IDENTIFIER)) {
                     method = BingoAntiCheat.AcquisitionMethod.COLLECTION_LOG;
-                    sourceDetails = "Collection log";
-                } else if (message.contains("chest") || message.contains("loot")) {
+                    sourceDetails = COLLECTION_LOG_IDENTIFIER;
+                } else if (message.contains(CHEST_IDENTIFIER) || message.contains(LOOT_IDENTIFIER)) {
                     method = BingoAntiCheat.AcquisitionMethod.CHEST_LOOT;
-                    sourceDetails = "Chest/Loot container";
+                    sourceDetails = CHEST_IDENTIFIER + "/" + LOOT_IDENTIFIER;
                 }
 
                 if (pattern.isMultiItem()) {
@@ -605,9 +605,7 @@ public class BingoPlugin extends Plugin {
             }
             
             // Update the UI
-            SwingUtilities.invokeLater(() -> {
-                Optional.ofNullable(panel).ifPresent(p -> p.updateItems(items));
-            });
+            SwingUtilities.invokeLater(() -> Optional.ofNullable(panel).ifPresent(p -> p.updateItems(items)));
             
             // If this is a group item, log which specific item was obtained
             if (bingoItem.isGroup()) {
@@ -633,9 +631,11 @@ public class BingoPlugin extends Plugin {
             log.debug("Received empty item list from team storage");
             
             // Only ignore empty updates when we already have items
-            if (!items.isEmpty()) {
-                log.info("Ignoring empty update when we have {} existing items", items.size());
-                return;
+            synchronized (items) {
+                if (!items.isEmpty()) {
+                    log.info("Ignoring empty update when we have {} existing items", items.size());
+                    return;
+                }
             }
             
             return;
@@ -652,142 +652,71 @@ public class BingoPlugin extends Plugin {
 
             // Create a map of existing items by name for preserving group information and obtained status
             Map<String, BingoItem> existingItemsByName = new HashMap<>();
-            for (BingoItem item : items) {
-                existingItemsByName.put(item.getName().toLowerCase(), item);
-            }
+            
+            synchronized (items) {
+                for (BingoItem item : items) {
+                    existingItemsByName.put(item.getName().toLowerCase(), item);
+                }
 
-            // Get current obtained items from local config before clearing the list
-            // This helps preserve obtained status during client restart
-            String profileKey = currentProfile + "." + CONFIG_KEY_OBTAINED_ITEMS;
-            String savedItemsStr = configManager.getConfiguration(CONFIG_GROUP, profileKey);
-            Set<String> savedObtainedItems = new HashSet<>();
-            if (savedItemsStr != null && !savedItemsStr.isEmpty()) {
-                Arrays.stream(savedItemsStr.split(","))
-                    .map(String::trim)
-                    .filter(s -> !s.isEmpty())
-                    .forEach(savedObtainedItems::add);
-                log.debug("Found {} saved obtained items in config", savedObtainedItems.size());
-            }
+                // Get current obtained items from local config before clearing the list
+                // This helps preserve obtained status during client restart
+                String profileKey = currentProfile + "." + CONFIG_KEY_OBTAINED_ITEMS;
+                String savedItemsStr = configManager.getConfiguration(CONFIG_GROUP, profileKey);
+                Set<String> savedObtainedItems = new HashSet<>();
+                if (savedItemsStr != null && !savedItemsStr.isEmpty()) {
+                    Arrays.stream(savedItemsStr.split(","))
+                        .map(String::trim)
+                        .filter(s -> !s.isEmpty())
+                        .forEach(savedObtainedItems::add);
+                    log.debug("Found {} saved obtained items in config", savedObtainedItems.size());
+                }
 
-            // Clear existing items
-            items.clear();
-            itemsByName.clear();
+                // Clear existing items
+                items.clear();
+                itemsByName.clear();
 
-            // Add the updated items
-            for (BingoItem item : updatedItems) {
-                // Check if the item was previously obtained in our config
-                boolean wasObtainedLocally = savedObtainedItems.contains(item.getName());
-                
-                // Preserve obtained status if the item already existed
-                BingoItem existingItem = existingItemsByName.get(item.getName().toLowerCase());
-                if (existingItem != null) {
-                    // If the item was already obtained in our existing data, keep it that way
-                    // Unless the updated item specifically marks it as not obtained (team state takes priority)
-                    if ((existingItem.isObtained() || wasObtainedLocally) && !item.isObtained()) {
-                        // Only apply the existing obtained status if we're using local persistence
+                // Add the updated items
+                for (BingoItem item : updatedItems) {
+                    // Check if the item was previously obtained in our config
+                    boolean wasObtainedLocally = savedObtainedItems.contains(item.getName());
+                    
+                    // Preserve obtained status if the item already existed
+                    BingoItem existingItem = existingItemsByName.get(item.getName().toLowerCase());
+                    if (existingItem != null) {
+                        // If the item was already obtained in our existing data, keep it that way
+                        // Unless the updated item specifically marks it as not obtained (team state takes priority)
+                        if ((existingItem.isObtained() || wasObtainedLocally) && !item.isObtained()) {
+                            // Only apply the existing obtained status if we're using local persistence
+                            if (!profileManager.getProfilePersistObtained()) {
+                                log.debug("Preserving obtained status for item: {}", item.getName());
+                                item.setObtained(true);
+                            }
+                        }
+                        
+                        // Preserve group information if it exists
+                        if (existingItem.isGroup() && !item.isGroup()) {
+                            item.setGroup(true);
+                            item.setAlternativeNames(existingItem.getAlternativeNames());
+                        }
+                    } else if (wasObtainedLocally && !item.isObtained()) {
+                        // Item wasn't in memory but was in saved config
                         if (!profileManager.getProfilePersistObtained()) {
-                            log.debug("Preserving obtained status for item: {}", item.getName());
+                            log.debug("Setting obtained=true for item from config: {}", item.getName());
                             item.setObtained(true);
                         }
                     }
                     
-                    // Preserve group information if it exists
-                    if (existingItem.isGroup() && !item.isGroup()) {
-                        item.setGroup(true);
-                        item.setAlternativeNames(existingItem.getAlternativeNames());
-                    }
-                } else if (wasObtainedLocally && !item.isObtained()) {
-                    // Item wasn't in memory but was in saved config
-                    if (!profileManager.getProfilePersistObtained()) {
-                        log.debug("Setting obtained=true for item from config: {}", item.getName());
-                        item.setObtained(true);
-                    }
+                    items.add(item);
+                    itemsByName.put(item.getName().toLowerCase(), item);
                 }
-                
-                items.add(item);
-                itemsByName.put(item.getName().toLowerCase(), item);
             }
 
             // Load any saved items (applicable for non-persistObtained team profiles)
             loadSavedItems();
 
             // Update the UI
-            SwingUtilities.invokeLater(() -> {
-                Optional.ofNullable(panel).ifPresent(p -> p.updateItems(new ArrayList<>(items)));
-            });
+            SwingUtilities.invokeLater(() -> Optional.ofNullable(panel).ifPresent(p -> p.updateItems(new ArrayList<>(items))));
         });
-    }
-    
-    /**
-     * Detects if an item is a group item based on its name and processes it accordingly
-     *
-     * @param item The item to check and process
-     */
-    private void detectAndProcessGroupItem(BingoItem item) {
-        // Check if the name contains a slash, which indicates it might be a group item
-        // (e.g., "Item1 / Item2 / Item3")
-        if (item.getName().contains("/")) {
-            log.debug("Detected potential group item from name: {}", item.getName());
-            
-            // Split the name by slashes and create alternative names
-            String[] parts = item.getName().split("/");
-            List<String> alternativeNames = new ArrayList<>();
-            
-            for (int i = 1; i < parts.length; i++) {
-                String part = parts[i].trim();
-                if (!part.isEmpty()) {
-                    alternativeNames.add(part);
-                }
-            }
-            
-            if (!alternativeNames.isEmpty()) {
-                item.setGroup(true);
-                item.setAlternativeNames(alternativeNames);
-                
-                // Try to resolve the item ID from the first part
-                String firstPart = parts[0].trim();
-                if (!firstPart.isEmpty()) {
-                    List<ItemPrice> results = itemManager.search(firstPart);
-                    if (!results.isEmpty()) {
-                        item.setItemId(results.get(0).getId());
-                    }
-                }
-            }
-        }
-    }
-
-    /**
-     * Resolves the item ID for an item
-     *
-     * @param item The item to resolve
-     */
-    private void resolveItemId(BingoItem item) {
-        String itemName = item.getName();
-
-        try {
-            // Try to find the item in the item manager
-            List<ItemPrice> results = itemManager.search(itemName);
-            if (!results.isEmpty()) {
-                // Use the first result
-                ItemPrice result = results.get(0);
-                item.setItemId(result.getId());
-                log.debug("Resolved item ID for {}: {}", itemName, result.getId());
-            } else {
-                // Try a more flexible search
-                String searchTerm = itemName.replaceAll("[^a-zA-Z0-9 ]", "").trim();
-                results = itemManager.search(searchTerm);
-                if (!results.isEmpty()) {
-                    // Use the first result
-                    ItemPrice result = results.get(0);
-                    item.setItemId(result.getId());
-                    log.debug("Resolved item ID for {} using flexible search: {}", itemName, result.getId());
-                } else {
-                    log.debug("Could not resolve item ID for: {}", itemName);
-                }
-            }
-        } catch (Exception e) {
-            log.error("Error resolving item ID for {}: {}", itemName, e.getMessage());
-        }
     }
 
     /**
@@ -815,7 +744,7 @@ public class BingoPlugin extends Plugin {
         checkForCompletions(index);
 
         // Get the team info if in team mode
-        String teamCode = null;
+        String teamCode;
         String teamName = null;
         BingoConfig.BingoMode bingoMode = profileManager.getProfileBingoMode();
         if (bingoMode == BingoConfig.BingoMode.TEAM) {
@@ -838,21 +767,19 @@ public class BingoPlugin extends Plugin {
         final String finalTeamName = teamName;
 
         // Always capture screenshot
-        captureScreenshotAsync(screenshot -> {
-            discordNotifier.sendNotification(
-                    message,
-                    screenshot,
-                    false,
-                    profileManager.getProfileDiscordWebhook(),
-                    executor,
-                    finalTeamName
-            );
-        });
+        captureScreenshotAsync(screenshot -> discordNotifier.sendNotification(
+                message,
+                screenshot,
+                false,
+                profileManager.getProfileDiscordWebhook(),
+                executor,
+                finalTeamName
+        ));
 
         // Show chat message only if enabled
         if (shouldShowChatNotifications()) {
             chatMessageManager.queue(QueuedMessage.builder()
-                    .type(ChatMessageType.GAMEMESSAGE)
+                    .type(ChatMessageType.CONSOLE)
                     .runeLiteFormattedMessage("Bingo: Obtained item " + itemName)
                     .build());
         }
@@ -871,34 +798,32 @@ public class BingoPlugin extends Plugin {
         }
 
         // Use RuneLite's built-in DrawManager to capture the screenshot
-        drawManager.requestNextFrameListener(image -> {
-            executor.submit(() -> {
-                try {
-                    if (image == null) {
-                        log.warn("Received null image from drawManager");
-                        callback.accept(null);
-                        return;
-                    }
-
-                    BufferedImage screenshot = new BufferedImage(
-                            image.getWidth(null),
-                            image.getHeight(null),
-                            BufferedImage.TYPE_INT_ARGB);
-
-                    Graphics graphics = screenshot.getGraphics();
-                    graphics.drawImage(image, 0, 0, null);
-                    graphics.dispose();
-
-                    log.debug("Screenshot captured successfully: {}x{}",
-                            screenshot.getWidth(), screenshot.getHeight());
-
-                    callback.accept(screenshot);
-                } catch (Exception e) {
-                    log.warn("Exception while processing screenshot image", e);
+        drawManager.requestNextFrameListener(image -> executor.submit(() -> {
+            try {
+                if (image == null) {
+                    log.warn("Received null image from drawManager");
                     callback.accept(null);
+                    return;
                 }
-            });
-        });
+
+                BufferedImage screenshot = new BufferedImage(
+                        image.getWidth(null),
+                        image.getHeight(null),
+                        BufferedImage.TYPE_INT_ARGB);
+
+                Graphics graphics = screenshot.getGraphics();
+                graphics.drawImage(image, 0, 0, null);
+                graphics.dispose();
+
+                log.debug("Screenshot captured successfully: {}x{}",
+                        screenshot.getWidth(), screenshot.getHeight());
+
+                callback.accept(screenshot);
+            } catch (Exception e) {
+                log.warn("Exception while processing screenshot image", e);
+                callback.accept(null);
+            }
+        }));
     }
 
     /**
@@ -1022,40 +947,41 @@ public class BingoPlugin extends Plugin {
 
         String message = getCompletionMessage(completionType, completionIndex);
 
-        // Get the team name if in team mode
+        final String finalTeamName = getTeamNameString();
+
+        // Send Discord notification
+        captureScreenshotAsync(screenshot -> discordNotifier.sendNotification(
+                message,
+                screenshot,
+                true,
+                profileManager.getProfileDiscordWebhook(),
+                executor,
+                finalTeamName
+        ));
+
+        // Show chat message only if enabled
+        if (shouldShowChatNotifications()) {
+            chatMessageManager.queue(QueuedMessage.builder()
+                    .type(ChatMessageType.CONSOLE)
+                    .runeLiteFormattedMessage("Bingo: " + message)
+                    .build());
+        }
+    }
+
+    private String getTeamNameString() {
         String teamName = null;
         BingoConfig.BingoMode bingoMode = profileManager.getProfileBingoMode();
         if (bingoMode == BingoConfig.BingoMode.TEAM) {
             teamName = profileManager.getProfileTeamName();
             String teamCode = profileManager.getProfileTeamCode();
-            
+
             // If we have a team code but no team name, use the code as the name
             if ((teamName == null || teamName.isEmpty()) && teamCode != null && !teamCode.isEmpty()) {
                 teamName = "Team " + teamCode;
             }
         }
-        
-        final String finalTeamName = teamName;
 
-        // Send Discord notification
-        captureScreenshotAsync(screenshot -> {
-            discordNotifier.sendNotification(
-                    message,
-                    screenshot,
-                    true,
-                    profileManager.getProfileDiscordWebhook(),
-                    executor,
-                    finalTeamName
-            );
-        });
-
-        // Show chat message only if enabled
-        if (shouldShowChatNotifications()) {
-            chatMessageManager.queue(QueuedMessage.builder()
-                    .type(ChatMessageType.GAMEMESSAGE)
-                    .runeLiteFormattedMessage("Bingo: " + message)
-                    .build());
-        }
+        return teamName;
     }
 
     /**
@@ -1114,13 +1040,11 @@ public class BingoPlugin extends Plugin {
         loadItems();
 
         // Update the UI
-        SwingUtilities.invokeLater(() -> {
-            Optional.ofNullable(panel).ifPresent(p -> {
-                p.updateItems(items);
-                p.updateSourceWarningLabel();
-                p.updateButtonVisibility();
-            });
-        });
+        SwingUtilities.invokeLater(() -> Optional.ofNullable(panel).ifPresent(p -> {
+            p.updateItems(items);
+            p.updateSourceWarningLabel();
+            p.updateButtonVisibility();
+        }));
     }
 
     /**
@@ -1133,13 +1057,13 @@ public class BingoPlugin extends Plugin {
         log.debug("Loading items with source type: {}", itemSourceType);
 
         // Ensure we display correct source in UI regardless of empty state
-        SwingUtilities.invokeLater(() -> {
-            Optional.ofNullable(panel).ifPresent(BingoPanel::updateSourceWarningLabel);
-        });
+        SwingUtilities.invokeLater(() -> Optional.ofNullable(panel).ifPresent(BingoPanel::updateSourceWarningLabel));
 
         // Always clear existing items first to prevent mixing
-        items.clear();
-        itemsByName.clear();
+        synchronized (items) {
+            items.clear();
+            itemsByName.clear();
+        }
 
         // Load items based on the source type
         if (itemSourceType == BingoConfig.ItemSourceType.REMOTE) {
@@ -1153,9 +1077,7 @@ public class BingoPlugin extends Plugin {
                 log.warn("No remote URL configured for REMOTE source type. Items will remain empty.");
                 
                 // Update UI to show empty grid
-                SwingUtilities.invokeLater(() -> {
-                    Optional.ofNullable(panel).ifPresent(p -> p.updateItems(items));
-                });
+                SwingUtilities.invokeLater(() -> Optional.ofNullable(panel).ifPresent(p -> p.updateItems(items)));
             }
         } else {
             // Load items from the manual list
@@ -1166,9 +1088,7 @@ public class BingoPlugin extends Plugin {
                 log.warn("No manual items configured");
                 
                 // Update UI to show empty grid
-                SwingUtilities.invokeLater(() -> {
-                    Optional.ofNullable(panel).ifPresent(p -> p.updateItems(items));
-                });
+                SwingUtilities.invokeLater(() -> Optional.ofNullable(panel).ifPresent(p -> p.updateItems(items)));
             }
         }
     }
@@ -1178,66 +1098,68 @@ public class BingoPlugin extends Plugin {
      */
     private void loadItemsFromManualList() {
         // Clear existing items
-        items.clear();
-        itemsByName.clear();
-        
-        // Get the item list
-        String itemList = profileManager.getProfileItemList();
-        if (itemList == null || itemList.isEmpty()) {
-            log.debug("No manual item list found");
-            return;
-        }
-        
-        // Split the item list by newlines
-        List<String> itemNames = Arrays.asList(itemList.split("\\r?\\n"));
-        
-        // Trim the list to the maximum number of items
-        if (itemNames.size() > MAX_ITEMS) {
-            log.warn("Item list contains more than {} items, truncating", MAX_ITEMS);
-            itemNames = itemNames.subList(0, MAX_ITEMS);
-        }
-        
-        // Process each item
-        for (String itemLine : itemNames) {
-            itemLine = itemLine.trim();
-            if (itemLine.isEmpty()) {
-                continue;
+        synchronized (items) {
+            items.clear();
+            itemsByName.clear();
+            
+            // Get the item list
+            String itemList = profileManager.getProfileItemList();
+            if (itemList == null || itemList.isEmpty()) {
+                log.debug("No manual item list found");
+                return;
             }
             
-            // Check if this is an item group (contains colons)
-            if (itemLine.contains(":")) {
-                // This is an item group
-                BingoItemGroup itemGroup = BingoItemGroup.fromString(itemLine);
-                BingoItem groupItem = BingoItem.fromItemGroup(itemGroup, itemManager);
-                
-                // Add the group item to our lists
-                items.add(groupItem);
-                itemsByName.put(groupItem.getName().toLowerCase(), groupItem);
-                
-                // Also add each individual item name to the itemsByName map for lookup
-                for (String individualName : itemGroup.getItemNames()) {
-                    if (!individualName.equals(groupItem.getName())) {
-                        itemsByName.put(individualName.toLowerCase(), groupItem);
-                    }
+            // Split the item list by newlines
+            List<String> itemNames = Arrays.asList(itemList.split("\\r?\\n"));
+            
+            // Trim the list to the maximum number of items
+            if (itemNames.size() > MAX_ITEMS) {
+                log.warn("Item list contains more than {} items, truncating", MAX_ITEMS);
+                itemNames = itemNames.subList(0, MAX_ITEMS);
+            }
+            
+            // Process each item
+            for (String itemLine : itemNames) {
+                itemLine = itemLine.trim();
+                if (itemLine.isEmpty()) {
+                    continue;
                 }
                 
-                log.debug("Added item group: {} with alternatives: {}", 
-                    groupItem.getName(), String.join(", ", groupItem.getAlternativeNames()));
-            } else {
-                // This is a regular item
-                // Try to find the item in the item manager
-                List<ItemPrice> results = itemManager.search(itemLine);
-                if (!results.isEmpty()) {
-                    // Use the first result
-                    ItemPrice result = results.get(0);
-                    BingoItem item = new BingoItem(itemLine, result.getId());
-                    items.add(item);
-                    itemsByName.put(itemLine.toLowerCase(), item);
+                // Check if this is an item group (contains colons)
+                if (itemLine.contains(":")) {
+                    // This is an item group
+                    BingoItemGroup itemGroup = BingoItemGroup.fromString(itemLine);
+                    BingoItem groupItem = BingoItem.fromItemGroup(itemGroup, itemManager);
+                    
+                    // Add the group item to our lists
+                    items.add(groupItem);
+                    itemsByName.put(groupItem.getName().toLowerCase(), groupItem);
+                    
+                    // Also add each individual item name to the itemsByName map for lookup
+                    for (String individualName : itemGroup.getItemNames()) {
+                        if (!individualName.equals(groupItem.getName())) {
+                            itemsByName.put(individualName.toLowerCase(), groupItem);
+                        }
+                    }
+                    
+                    log.debug("Added item group: {} with alternatives: {}", 
+                        groupItem.getName(), String.join(", ", groupItem.getAlternativeNames()));
                 } else {
-                    // Item not found, add it with a placeholder ID
-                    BingoItem item = new BingoItem(itemLine, -1);
-                    items.add(item);
-                    itemsByName.put(itemLine.toLowerCase(), item);
+                    // This is a regular item
+                    // Try to find the item in the item manager
+                    List<ItemPrice> results = itemManager.search(itemLine);
+                    if (!results.isEmpty()) {
+                        // Use the first result
+                        ItemPrice result = results.get(0);
+                        BingoItem item = new BingoItem(itemLine, result.getId());
+                        items.add(item);
+                        itemsByName.put(itemLine.toLowerCase(), item);
+                    } else {
+                        // Item not found, add it with a placeholder ID
+                        BingoItem item = new BingoItem(itemLine, -1);
+                        items.add(item);
+                        itemsByName.put(itemLine.toLowerCase(), item);
+                    }
                 }
             }
         }
@@ -1266,7 +1188,7 @@ public class BingoPlugin extends Plugin {
                             // The items might be stored as a Map or as a List in the response
                             Object itemsObj = teamData.get("items");
                             if (itemsObj instanceof Map) {
-                                @SuppressWarnings("unchecked")
+                                // Use generic type for the Map to ensure type safety
                                 Map<String, Object> itemsMap = (Map<String, Object>) itemsObj;
                                 
                                 clientThread.invokeLater(() -> {
@@ -1274,7 +1196,7 @@ public class BingoPlugin extends Plugin {
                                     
                                     for (Map.Entry<String, Object> entry : itemsMap.entrySet()) {
                                         if (entry.getValue() instanceof Map) {
-                                            @SuppressWarnings("unchecked")
+                                            // Use generic type for the Map to ensure type safety
                                             Map<String, Object> itemData = (Map<String, Object>) entry.getValue();
                                             
                                             if (itemData.containsKey("obtained") && Boolean.TRUE.equals(itemData.get("obtained"))) {
@@ -1421,9 +1343,8 @@ public class BingoPlugin extends Plugin {
      * Resets the bingo board.
      *
      * @param showConfirmDialog Whether to show a confirmation dialog
-     * @return true if the board was reset, false if the user cancelled
      */
-    public boolean resetBingoBoard(boolean showConfirmDialog) {
+    public void resetBingoBoard(boolean showConfirmDialog) {
         if (showConfirmDialog) {
             int result = javax.swing.JOptionPane.showConfirmDialog(
                     panel,
@@ -1434,7 +1355,7 @@ public class BingoPlugin extends Plugin {
             );
 
             if (result != javax.swing.JOptionPane.YES_OPTION) {
-                return false;
+                return;
             }
         }
 
@@ -1449,13 +1370,12 @@ public class BingoPlugin extends Plugin {
 
         if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
             chatMessageManager.queue(QueuedMessage.builder()
-                    .type(ChatMessageType.GAMEMESSAGE)
+                    .type(ChatMessageType.CONSOLE)
                     .runeLiteFormattedMessage("Bingo board has been reset.")
                     .build());
         }
 
         log.debug("Bingo board reset for profile: {}", config.currentProfile());
-        return true;
     }
 
     /**
@@ -1479,9 +1399,7 @@ public class BingoPlugin extends Plugin {
         items.clear();
         itemsByName.clear();
 
-        SwingUtilities.invokeLater(() -> {
-            Optional.ofNullable(panel).ifPresent(p -> p.updateItems(items));
-        });
+        SwingUtilities.invokeLater(() -> Optional.ofNullable(panel).ifPresent(p -> p.updateItems(items)));
         if (remoteUrl.contains("pastebin.com")) {
             // Convert pastebin.com/xyz to pastebin.com/raw/xyz
             if (!remoteUrl.contains("/raw/")) {
@@ -1508,17 +1426,15 @@ public class BingoPlugin extends Plugin {
                         return;
                     }
 
-                    SwingUtilities.invokeLater(() -> {
-                        Optional.ofNullable(panel).ifPresent(p -> {
-                            // Just update UI with current (likely empty) items
-                            p.updateItems(items);
-                            // Maybe show an error indicator in the UI
-                            JOptionPane.showMessageDialog(p, 
-                                "Failed to fetch items from remote URL: " + e.getMessage(), 
-                                "Remote URL Error", 
-                                JOptionPane.ERROR_MESSAGE);
-                        });
-                    });
+                    SwingUtilities.invokeLater(() -> Optional.ofNullable(panel).ifPresent(p -> {
+                        // Just update UI with current (likely empty) items
+                        p.updateItems(items);
+                        // Maybe show an error indicator in the UI
+                        JOptionPane.showMessageDialog(p,
+                            "Failed to fetch items from remote URL: " + e.getMessage(),
+                            "Remote URL Error",
+                            JOptionPane.ERROR_MESSAGE);
+                    }));
                 });
             }
 
@@ -1541,9 +1457,7 @@ public class BingoPlugin extends Plugin {
                             }
                             
                             updateItemsFromList(lines);
-                            SwingUtilities.invokeLater(() -> {
-                                Optional.ofNullable(panel).ifPresent(p -> p.updateItems(items));
-                            });
+                            SwingUtilities.invokeLater(() -> Optional.ofNullable(panel).ifPresent(p -> p.updateItems(items)));
                         });
                     } else {
                         log.error("Failed to fetch items from remote URL: HTTP {}", response.code());
@@ -1559,17 +1473,15 @@ public class BingoPlugin extends Plugin {
                                 return;
                             }
 
-                            SwingUtilities.invokeLater(() -> {
-                                Optional.ofNullable(panel).ifPresent(p -> {
-                                    // Just update UI with current (likely empty) items
-                                    p.updateItems(items);
-                                    // Show an error indicator in the UI
-                                    JOptionPane.showMessageDialog(p, 
-                                        "Failed to fetch items from remote URL: HTTP " + response.code(), 
-                                        "Remote URL Error", 
-                                        JOptionPane.ERROR_MESSAGE);
-                                });
-                            });
+                            SwingUtilities.invokeLater(() -> Optional.ofNullable(panel).ifPresent(p -> {
+                                // Just update UI with current (likely empty) items
+                                p.updateItems(items);
+                                // Show an error indicator in the UI
+                                JOptionPane.showMessageDialog(p,
+                                    "Failed to fetch items from remote URL: HTTP " + response.code(),
+                                    "Remote URL Error",
+                                    JOptionPane.ERROR_MESSAGE);
+                            }));
                         });
                     }
                 } catch (Exception e) {
@@ -1583,17 +1495,15 @@ public class BingoPlugin extends Plugin {
                             return;
                         }
 
-                        SwingUtilities.invokeLater(() -> {
-                            Optional.ofNullable(panel).ifPresent(p -> {
-                                // Just update UI with current (likely empty) items
-                                p.updateItems(items);
-                                // Show an error indicator in the UI
-                                JOptionPane.showMessageDialog(p, 
-                                    "Error parsing remote URL content: " + e.getMessage(), 
-                                    "Remote URL Error", 
-                                    JOptionPane.ERROR_MESSAGE);
-                            });
-                        });
+                        SwingUtilities.invokeLater(() -> Optional.ofNullable(panel).ifPresent(p -> {
+                            // Just update UI with current (likely empty) items
+                            p.updateItems(items);
+                            // Show an error indicator in the UI
+                            JOptionPane.showMessageDialog(p,
+                                "Error parsing remote URL content: " + e.getMessage(),
+                                "Remote URL Error",
+                                JOptionPane.ERROR_MESSAGE);
+                        }));
                     });
                 }
             }
@@ -1609,8 +1519,10 @@ public class BingoPlugin extends Plugin {
         log.debug("Updating items from list: {} items", remoteItems.size());
 
         // Clear existing items
-        items.clear();
-        itemsByName.clear();
+        synchronized (items) {
+            items.clear();
+            itemsByName.clear();
+        }
 
         // Filter out empty items
         remoteItems = remoteItems.stream()
@@ -1715,8 +1627,7 @@ public class BingoPlugin extends Plugin {
                             // If this is a group item, also update the UI for all items in the group
                             if (item.isGroup() && item.getAlternativeNames() != null) {
                                 SwingUtilities.invokeLater(() -> {
-                                    for (int i = 0; i < items.size(); i++) {
-                                        BingoItem otherItem = items.get(i);
+                                    for (BingoItem otherItem : items) {
                                         if (otherItem != item && item.matchesName(otherItem.getName())) {
                                             otherItem.setObtained(newStatus);
                                         }
@@ -1743,9 +1654,7 @@ public class BingoPlugin extends Plugin {
         }
         
         // Update the UI
-        SwingUtilities.invokeLater(() -> {
-            Optional.ofNullable(panel).ifPresent(p -> p.updateItems(items));
-        });
+        SwingUtilities.invokeLater(() -> Optional.ofNullable(panel).ifPresent(p -> p.updateItems(items)));
     }
 
     /**
@@ -1822,7 +1731,7 @@ public class BingoPlugin extends Plugin {
             log.warn("Cannot refresh team items: not in a team profile");
             if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
                 chatMessageManager.queue(QueuedMessage.builder()
-                        .type(ChatMessageType.GAMEMESSAGE)
+                        .type(ChatMessageType.CONSOLE)
                         .runeLiteFormattedMessage("Cannot refresh team items: not in a team profile.")
                         .build());
             }
@@ -1835,7 +1744,7 @@ public class BingoPlugin extends Plugin {
             log.warn("Cannot refresh team items: no team code");
             if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
                 chatMessageManager.queue(QueuedMessage.builder()
-                        .type(ChatMessageType.GAMEMESSAGE)
+                        .type(ChatMessageType.CONSOLE)
                         .runeLiteFormattedMessage("Cannot refresh team items: no team code.")
                         .build());
             }
@@ -1847,7 +1756,7 @@ public class BingoPlugin extends Plugin {
             log.warn("Cannot refresh team items: profile is not using a remote URL");
             if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
                 chatMessageManager.queue(QueuedMessage.builder()
-                        .type(ChatMessageType.GAMEMESSAGE)
+                        .type(ChatMessageType.CONSOLE)
                         .runeLiteFormattedMessage("Cannot refresh team items: profile is not using a remote URL.")
                         .build());
             }
@@ -1860,7 +1769,7 @@ public class BingoPlugin extends Plugin {
             log.warn("Cannot refresh team items: no remote URL configured");
             if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
                 chatMessageManager.queue(QueuedMessage.builder()
-                        .type(ChatMessageType.GAMEMESSAGE)
+                        .type(ChatMessageType.CONSOLE)
                         .runeLiteFormattedMessage("Cannot refresh team items: no remote URL configured.")
                         .build());
             }
@@ -1870,15 +1779,13 @@ public class BingoPlugin extends Plugin {
         // Show notification that refresh has started
         if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
             chatMessageManager.queue(QueuedMessage.builder()
-                    .type(ChatMessageType.GAMEMESSAGE)
+                    .type(ChatMessageType.CONSOLE)
                     .runeLiteFormattedMessage("Refreshing team items from remote URL...")
                     .build());
         }
-        
-        final String finalTeamCode = teamCode;
-        
+
         // Make the operation fully asynchronous - don't wait for completion
-        teamService.refreshTeamItems(finalTeamCode)
+        teamService.refreshTeamItems(teamCode)
             .thenAcceptAsync(success -> {
                 // This runs after the operation completes successfully
                 clientThread.invokeLater(() -> {
@@ -1886,7 +1793,7 @@ public class BingoPlugin extends Plugin {
                         log.info("Successfully refreshed team items from remote URL");
                         if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
                             chatMessageManager.queue(QueuedMessage.builder()
-                                    .type(ChatMessageType.GAMEMESSAGE)
+                                    .type(ChatMessageType.CONSOLE)
                                     .runeLiteFormattedMessage("Successfully refreshed team items from remote URL.")
                                     .build());
                         }
@@ -1897,7 +1804,7 @@ public class BingoPlugin extends Plugin {
                         log.error("Failed to refresh team items from remote URL");
                         if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
                             chatMessageManager.queue(QueuedMessage.builder()
-                                    .type(ChatMessageType.GAMEMESSAGE)
+                                    .type(ChatMessageType.CONSOLE)
                                     .runeLiteFormattedMessage("Failed to refresh team items from remote URL.")
                                     .build());
                         }
@@ -1914,7 +1821,7 @@ public class BingoPlugin extends Plugin {
                         log.error("Timeout while refreshing team items", ex);
                         if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
                             chatMessageManager.queue(QueuedMessage.builder()
-                                    .type(ChatMessageType.GAMEMESSAGE)
+                                    .type(ChatMessageType.CONSOLE)
                                     .runeLiteFormattedMessage("Timeout while refreshing team items. The server is taking too long to respond.")
                                     .build());
                         }
@@ -1922,7 +1829,7 @@ public class BingoPlugin extends Plugin {
                         log.error("Error refreshing team items", ex);
                         if (client.getLocalPlayer() != null && shouldShowChatNotifications()) {
                             chatMessageManager.queue(QueuedMessage.builder()
-                                    .type(ChatMessageType.GAMEMESSAGE)
+                                    .type(ChatMessageType.CONSOLE)
                                     .runeLiteFormattedMessage("Error refreshing team items: " + ex.getMessage())
                                     .build());
                         }
@@ -1942,8 +1849,10 @@ public class BingoPlugin extends Plugin {
      */
     public void clearItems() {
         log.debug("Clearing all items");
-        items.clear();
-        itemsByName.clear();
+        synchronized (items) {
+            items.clear();
+            itemsByName.clear();
+        }
     }
 
     /**
@@ -2029,35 +1938,37 @@ public class BingoPlugin extends Plugin {
                     return;
                 }
                 
-                @SuppressWarnings("unchecked")
+                // Use generic type for the Map to ensure type safety
                 Map<String, Object> itemsMap = (Map<String, Object>) itemsObj;
                 
                 clientThread.invokeLater(() -> {
                     int updatedCount = 0;
                     
                     // Process each item in Firebase
-                    for (Map.Entry<String, Object> entry : itemsMap.entrySet()) {
-                        if (!(entry.getValue() instanceof Map)) {
-                            continue;
-                        }
-                        
-                        @SuppressWarnings("unchecked")
-                        Map<String, Object> itemData = (Map<String, Object>) entry.getValue();
-                        
-                        // Check if this item is obtained in Firebase
-                        boolean obtainedInFirebase = itemData.containsKey("obtained") && 
-                                                    Boolean.TRUE.equals(itemData.get("obtained"));
-                        
-                        // Get the item name
-                        String itemName = (String) itemData.getOrDefault("name", entry.getKey());
-                        
-                        // Find this item in our local list
-                        BingoItem localItem = itemsByName.get(itemName.toLowerCase());
-                        if (localItem != null) {
-                            // If Firebase says it's obtained but our UI doesn't, update the UI
-                            if (obtainedInFirebase && !localItem.isObtained()) {
-                                localItem.setObtained(true);
-                                updatedCount++;
+                    synchronized (items) {
+                        for (Map.Entry<String, Object> entry : itemsMap.entrySet()) {
+                            if (!(entry.getValue() instanceof Map)) {
+                                continue;
+                            }
+                            
+                            // Use generic type for the Map to ensure type safety
+                            Map<String, Object> itemData = (Map<String, Object>) entry.getValue();
+                            
+                            // Check if this item is obtained in Firebase
+                            boolean obtainedInFirebase = itemData.containsKey("obtained") && 
+                                                        Boolean.TRUE.equals(itemData.get("obtained"));
+                            
+                            // Get the item name
+                            String itemName = (String) itemData.getOrDefault("name", entry.getKey());
+                            
+                            // Find this item in our local list
+                            BingoItem localItem = itemsByName.get(itemName.toLowerCase());
+                            if (localItem != null) {
+                                // If Firebase says it's obtained but our UI doesn't, update the UI
+                                if (obtainedInFirebase && !localItem.isObtained()) {
+                                    localItem.setObtained(true);
+                                    updatedCount++;
+                                }
                             }
                         }
                     }
