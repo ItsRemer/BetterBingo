@@ -33,7 +33,7 @@ import com.google.gson.JsonSyntaxException;
 @Slf4j
 @Singleton
 public class BingoProfileManager {
-    private static final String CONFIG_GROUP = "betterbingo";
+    private static final String CONFIG_GROUP = "bingo";
     private static final String PROFILES_KEY = "profiles";
     private static final String DEFAULT_PROFILE = "Default";
     private static final String PROFILE_ITEM_UNLOCKS_KEY = "_itemUnlocks";

@@ -7,7 +7,7 @@ import net.runelite.client.config.ConfigSection;
 import java.util.Optional;
 
 
-@ConfigGroup("betterbingo")
+@ConfigGroup("bingo")
 public interface BingoConfig extends Config
 {
     @ConfigSection(

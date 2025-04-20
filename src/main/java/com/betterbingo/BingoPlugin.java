@@ -74,8 +74,7 @@ import java.util.concurrent.ConcurrentHashMap;
 )
 public class BingoPlugin extends Plugin {
 
-    // Use the class's name for the config group following RuneLite convention
-    static final String CONFIG_GROUP = "betterbingo";
+    static final String CONFIG_GROUP = "bingo";
     private static final String CONFIG_KEY_OBTAINED_ITEMS = "obtainedItems";
     private static final int GRID_SIZE = 5;
     private static final int MAX_ITEMS = 100;
