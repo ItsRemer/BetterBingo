@@ -18,13 +18,12 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.ScheduledExecutorService;
 
-import javax.swing.SwingUtilities;
+import javax.swing.*;
 
 import com.google.gson.reflect.TypeToken;
 import java.lang.reflect.Type;
 import java.util.function.BiFunction;
 import java.util.function.Supplier;
-import javax.swing.JOptionPane;
 import com.google.gson.JsonSyntaxException;
 
 /**
@@ -393,52 +392,77 @@ public class BingoProfileManager {
         }
     }
 
-    /**
-     * Registers team listeners for a profile.
-     *
-     * @param profileName The name of the profile
-     */
-    private void registerTeamListeners(String profileName) {
-        try {
-            BingoConfig.BingoMode bingoMode = getProfileBingoMode(profileName);
-            if (bingoMode == BingoConfig.BingoMode.TEAM) {
-                String teamCode = getProfileTeamCode(profileName);
-                if (teamCode != null && !teamCode.isEmpty()) {
-                    teamService.registerTeamListener(teamCode, plugin::updateItemsFromFirebase)
-                        .exceptionally(ex -> {
-                            final boolean isTeamNotFound = isIsTeamNotFound(ex);
+    private void registerTeamListeners(String profileName)
+    {
+        if (profileName == null || profileName.isBlank())
+        {
+            return;
+        }
 
-                            if (isTeamNotFound) {
-                                // Show warning to the user on the EDT
-                                final String finalTeamCode = teamCode;
-                                final String finalProfileName = profileName;
-                                SwingUtilities.invokeLater(() -> {
-                                    // Immediately ask user if they want to delete the profile
-                                    int option = JOptionPane.showConfirmDialog(
-                                        null,
-                                        "The team \"" + finalTeamCode + "\" no longer exists in the database.\n" +
-                                        "It may have been deleted by the team creator.\n" +
-                                        "Would you like to delete this profile?",
-                                        "Team Not Found",
-                                        JOptionPane.YES_NO_OPTION,
-                                        JOptionPane.WARNING_MESSAGE
-                                    );
-                                    
-                                    if (option == JOptionPane.YES_OPTION) {
-                                        // Delete the profile
-                                        deleteProfile(finalProfileName);
-                                    }
-                                });
-                            }
-                            
-                            return null;
-                        });
-                }
+        try
+        {
+            if (getProfileBingoMode(profileName) != BingoConfig.BingoMode.TEAM)
+            {
+                return;
             }
-        } catch (Exception e) {
-            log.debug("Error in registerTeamListeners for profile {}: {}", profileName, e.getMessage());
+            String teamCode = getProfileTeamCode(profileName);
+            if (teamCode == null || teamCode.isEmpty())
+            {
+                return;
+            }
+            teamService
+                    .registerTeamListener(teamCode, plugin::updateItemsFromFirebase)
+                    .exceptionally(ex -> handleRegistrationError(ex, profileName, teamCode));
+        }
+        catch (Exception ex)
+        {
+            log.debug("Error registering team listeners for profile {}: {}", profileName, ex.getMessage(), ex);
         }
     }
+
+    private Void handleRegistrationError(Throwable throwable, String profileName, String teamCode)
+    {
+        if (!isIsTeamNotFound(throwable))
+        {
+            return null;
+        }
+
+        SwingUtilities.invokeLater(() -> showTeamNotFoundDialog(profileName, teamCode));
+        return null;
+    }
+
+    private void showTeamNotFoundDialog(String profileName, String teamCode)
+    {
+        String message = "The team \"" + teamCode + "\" no longer exists in the database.\n" +
+                "It may have been deleted by the team creator.\n\n" +
+                "Would you like to delete this profile?";
+
+        JOptionPane optionPane = new JOptionPane(
+                message,
+                JOptionPane.WARNING_MESSAGE,
+                JOptionPane.YES_NO_OPTION);
+
+        JDialog dialog = optionPane.createDialog("Team Not Found");
+        dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
+        dialog.setModal(false);
+
+        optionPane.addPropertyChangeListener("value", evt -> {
+            Object value = optionPane.getValue();
+            if (value instanceof Integer)
+            {
+                int selection = ((Integer) value).intValue();
+                if (selection == JOptionPane.YES_OPTION)
+                {
+                    executor.submit(() -> deleteProfile(profileName));
+                }
+                dialog.dispose();
+            }
+        });
+
+        dialog.setVisible(true);
+    }
+
+
 
     private static boolean isIsTeamNotFound(Throwable ex) {
         String errorMessage = ex.getMessage();
@@ -1070,17 +1094,17 @@ public class BingoProfileManager {
     public void setConfigDirectly(String group, String key, String value) {
         // The ConfigManager doesn't always reliably update certain values (especially currentProfile)
         // This direct approach ensures that our configuration updates are immediate and reliable
-        
+
         // First try direct configuration set
         configManager.setConfiguration(group, key, value);
-        
+
         // Check if the update has been applied
         String currentValue = configManager.getConfiguration(group, key);
         if (value.equals(currentValue)) {
             // Success! The value has been updated.
             return;
         }
-        
+
         // If the direct update failed, try a more forceful approach
         // Clear the ConfigManager's cache for this value
         configManager.unsetConfiguration(group, key);
