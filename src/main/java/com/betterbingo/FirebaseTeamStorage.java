@@ -33,19 +33,18 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
 
     @Inject
     public FirebaseTeamStorage(OkHttpClient httpClient, Gson gson, ScheduledExecutorService executorService, Client client) {
-        // Use the injected OkHttpClient instead of getting a new one with OkHttpClient
         Dispatcher dispatcher = new Dispatcher();
-        dispatcher.setMaxRequests(20);         // Limit total concurrent requests
-        dispatcher.setMaxRequestsPerHost(5);   // Limit concurrent requests per host
+        dispatcher.setMaxRequests(20);
+        dispatcher.setMaxRequestsPerHost(5);
         
         this.httpClient = httpClient.newBuilder()
-            .cache(null)                       // Disable caching completely
+            .cache(null)
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
             .writeTimeout(20, TimeUnit.SECONDS)
             .dispatcher(dispatcher)
-            .connectionPool(new ConnectionPool(5, 5, TimeUnit.MINUTES)) // Keep up to 5 idle connections for 5 minutes
-            .retryOnConnectionFailure(true)    // Retry automatically on connection failures
+            .connectionPool(new ConnectionPool(5, 5, TimeUnit.MINUTES))
+            .retryOnConnectionFailure(true)
             .build();
             
         this.gson = gson;
@@ -57,11 +56,7 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
         CompletableFuture<Boolean> future = new CompletableFuture<>();
         
         try {
-            // First, find the target item name (handle groups)
-            resolveTargetItemName(teamCode, itemName).thenCompose(targetItemName -> {
-                // Update the item via API
-                return updateItemViaApi(teamCode, targetItemName, obtained);
-            }).thenAccept(future::complete).exceptionally(e -> {
+            resolveTargetItemName(teamCode, itemName).thenCompose(targetItemName -> updateItemViaApi(teamCode, targetItemName, obtained)).thenAccept(future::complete).exceptionally(e -> {
                 future.complete(false);
                 return null;
             });
@@ -312,10 +307,7 @@ public class FirebaseTeamStorage implements TeamStorageStrategy {
                     String safeKey = sanitizeKey(item.getName());
                     itemsData.add(safeKey, itemData);
                 }
-                
-                if (madeChanges) {
-                }
-                
+
                 // Send the request to the API
                 Request request = new Request.Builder()
                     .url(API_ENDPOINT + "/teams/" + teamCode + "/items")

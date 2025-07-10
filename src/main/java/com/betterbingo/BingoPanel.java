@@ -44,6 +44,7 @@ import java.awt.event.MouseEvent;
 import java.util.ArrayList;
 import java.awt.AWTEvent;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 @Slf4j
@@ -250,60 +251,58 @@ public class BingoPanel extends PluginPanel {
                     remoteUpdateButton.setEnabled(false);
                     refreshTeamButton.setEnabled(false);
                     
-                    // Use executor service instead of direct Thread creation
-                    executor.submit(() -> {
+                    // Use SwingUtilities.invokeLater to avoid blocking the EDT
+                    SwingUtilities.invokeLater(() -> {
                         try {
-                            // Use ConfigManager to update the profile directly
-                            SwingUtilities.invokeAndWait(() -> {
+                            // Use proper API method to update the profile
+                            profileManager.switchProfile(selectedProfile);
+                            
+                            // Double-check update was successful
+                            String actualProfile = config.currentProfile();
+                            if (!selectedProfile.equals(actualProfile)) {
+                                log.error("Profile switch failed. Wanted: {}, Got: {}",
+                                        selectedProfile, actualProfile);
+                            } else {
+                                log.info("Profile config successfully updated to: {}", selectedProfile);
+                            }
+
+                            executor.schedule(() -> {
                                 try {
-                                    // Use proper API method to update the profile
-                                    profileManager.switchProfile(selectedProfile);
-                                    
-                                    // Double-check update was successful
-                                    String actualProfile = config.currentProfile();
-                                    if (!selectedProfile.equals(actualProfile)) {
-                                        log.error("Profile switch failed. Wanted: {}, Got: {}",
-                                                selectedProfile, actualProfile);
-                                    } else {
-                                        log.info("Profile config successfully updated to: {}", selectedProfile);
-                                    }
+                                    plugin.clearItems();
+                                    plugin.forceReloadItems();
+
+                                    SwingUtilities.invokeLater(() -> {
+                                        try {
+                                            updateGrid();
+                                            updateSourceWarningLabel();
+                                            updateButtonVisibility();
+
+                                            profileComboBox.setEnabled(true);
+                                            resetButton.setEnabled(true);
+                                            remoteUpdateButton.setEnabled(true);
+                                            refreshTeamButton.setEnabled(true);
+                                        } catch (Exception ex) {
+                                            log.error("Error during profile switch UI update", ex);
+                                        }
+                                    });
                                 } catch (Exception ex) {
-                                    log.error("Error during profile switch", ex);
+                                    log.error("Error during profile switch background work", ex);
+                                    SwingUtilities.invokeLater(() -> {
+                                        profileComboBox.setEnabled(true);
+                                        resetButton.setEnabled(true);
+                                        remoteUpdateButton.setEnabled(true);
+                                        refreshTeamButton.setEnabled(true);
+                                    });
                                 }
-                            });
-
-                            // Instead of Thread.sleep, clear and reload items immediately
-                            // The ConfigManager update is synchronous so no need to wait
-                            plugin.clearItems();
-                            plugin.forceReloadItems();
-
-                            // Update UI on EDT
-                            SwingUtilities.invokeLater(() -> {
-                                try {
-                                    // Force complete UI rebuild
-                                    updateGrid();
-                                    updateSourceWarningLabel();
-                                    updateButtonVisibility();
-
-                                    // Re-enable all controls
-                                    profileComboBox.setEnabled(true);
-                                    resetButton.setEnabled(true);
-                                    remoteUpdateButton.setEnabled(true);
-                                    refreshTeamButton.setEnabled(true);
-                                } catch (Exception ex) {
-                                    log.error("Error during profile switch UI update", ex);
-                                }
-                            });
+                            }, 0, TimeUnit.MILLISECONDS);
+                            
                         } catch (Exception ex) {
                             log.error("Error during profile switch", ex);
 
-                            // Re-enable UI on error
-                            SwingUtilities.invokeLater(() -> {
-                                profileComboBox.setEnabled(true);
-                                resetButton.setEnabled(true);
-                                remoteUpdateButton.setEnabled(true);
-                                refreshTeamButton.setEnabled(true);
-                            });
+                            profileComboBox.setEnabled(true);
+                            resetButton.setEnabled(true);
+                            remoteUpdateButton.setEnabled(true);
+                            refreshTeamButton.setEnabled(true);
                         }
                     });
                 }
@@ -1092,41 +1091,30 @@ public class BingoPanel extends PluginPanel {
                 // Get the refresh interval directly from the spinner without re-declaring the variable
 
                 if (profileManager.createProfile(profileName)) {
-                    // Add a small delay to ensure the profile creation completes
-                    try {
-                        Thread.sleep(200);
-                    } catch (InterruptedException ex) {
-                        Thread.currentThread().interrupt();
-                    }
-
-                    // Switch to the selected profile
-                    profileManager.switchProfile(profileName);
-
-                    // Add a small delay to ensure the profile switch completes
-                    try {
-                        Thread.sleep(300);
-                    } catch (InterruptedException ex) {
-                        Thread.currentThread().interrupt();
-                    }
-
-                    // Then set the additional settings
-                    profileManager.setProfileDiscordWebhook(webhook);
-                    profileManager.setProfileItemSourceType(itemSourceType);
-                    profileManager.setProfileRemoteUrl(remoteUrl);
-                    profileManager.setProfileItemList(manualItems);
-                    profileManager.setProfileRefreshInterval((Integer) soloRefreshIntervalSpinner.getValue());
-                    profileManager.setProfilePersistObtained(persistObtained);
-
-                    // Force UI update to show the new profile in dropdown
-                    updateProfileComboBox();
-
-                    // Force reload of items to reflect the new profile
-                    plugin.forceReloadItems();
+                    executor.schedule(() -> {
+                        try {
+                            profileManager.switchProfile(profileName);
+                            profileManager.setProfileDiscordWebhook(webhook);
+                            profileManager.setProfileItemSourceType(itemSourceType);
+                            profileManager.setProfileRemoteUrl(remoteUrl);
+                            profileManager.setProfileItemList(manualItems);
+                            profileManager.setProfileRefreshInterval((Integer) soloRefreshIntervalSpinner.getValue());
+                            profileManager.setProfilePersistObtained(persistObtained);
+                            SwingUtilities.invokeLater(() -> {
+                                updateProfileComboBox();
+                                plugin.forceReloadItems();
+                            });
+                        } catch (Exception ex) {
+                            log.error("Error during profile setup", ex);
+                            SwingUtilities.invokeLater(() -> {
+                                JOptionPane.showMessageDialog(this, "Error setting up profile: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+                            });
+                        }
+                    }, 0, TimeUnit.MILLISECONDS);
                 } else {
                     JOptionPane.showMessageDialog(this, "Failed to create profile: Profile already exists", "Error", JOptionPane.ERROR_MESSAGE);
                 }
             } else if (createTeamRadio.isSelected() || joinTeamRadio.isSelected()) {
-                // Check maximum number of team profiles
                 long teamProfileCount = profileManager.getProfiles().stream()
                         .map(profileManager::getProfileBingoMode)
                         .filter(mode -> mode == BingoConfig.BingoMode.TEAM)
@@ -1138,7 +1126,7 @@ public class BingoPanel extends PluginPanel {
                                     "Please delete an existing team profile before creating/joining another.",
                             "Team Profile Limit Reached",
                             JOptionPane.ERROR_MESSAGE);
-                    return; // Prevent creation/joining
+                    return;
                 }
 
                 // Proceed with Create Team or Join Team logic
