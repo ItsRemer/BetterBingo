@@ -246,18 +246,7 @@ public class BingoPlugin extends Plugin {
                     if (teamCode != null && !teamCode.isEmpty()) {
                         // Register a team listener to get updates
                         teamService.registerTeamListener(teamCode, this::updateItemsFromFirebase);
-                        
-                        // CRITICAL: Force a UI refresh from Firebase to ensure UI shows correct state
-                        // This is needed because the UI might not reflect what's in Firebase on startup
-                        clientThread.invokeLater(() -> {
-                            try {
-                                // Give Firebase a moment to connect
-                                Thread.sleep(2000);
-                                refreshUIFromFirebase();
-                            } catch (InterruptedException e) {
-                                log.error("Error during startup UI refresh", e);
-                            }
-                        });
+                        executor.schedule(() -> clientThread.invokeLater(this::refreshUIFromFirebase), 2, TimeUnit.SECONDS);
                     }
                 }
                 
