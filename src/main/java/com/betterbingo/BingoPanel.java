@@ -2,14 +2,19 @@ package com.betterbingo;
 
 import java.awt.*;
 import java.awt.event.AWTEventListener;
+import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.util.List;
 import javax.inject.Inject;
 import javax.swing.BorderFactory;
 import javax.swing.ImageIcon;
+import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
+import javax.swing.KeyStroke;
 import javax.swing.SwingConstants;
 import javax.swing.border.EmptyBorder;
 
@@ -1407,24 +1412,19 @@ public class BingoPanel extends PluginPanel {
 
             executor.schedule(() -> SwingUtilities.invokeLater(popup::dispose), 5, java.util.concurrent.TimeUnit.SECONDS);
 
-            final AWTEventListener listener = getMouseEventListener(popup);
-            Toolkit.getDefaultToolkit().addAWTEventListener(listener, AWTEvent.MOUSE_EVENT_MASK);
-        }
-    }
-
-    private static AWTEventListener getMouseEventListener(JWindow popup) {
-        AtomicReference<AWTEventListener> listenerRef = new AtomicReference<>();
-        AWTEventListener listener = event -> {
-            if (event instanceof MouseEvent) {
-                MouseEvent me = (MouseEvent) event;
-                if (me.getID() == MouseEvent.MOUSE_PRESSED && !SwingUtilities.isDescendingFrom(me.getComponent(), popup)) {
-                    popup.dispose();
-                    Toolkit.getDefaultToolkit().removeAWTEventListener(listenerRef.get());
+            popup.addWindowFocusListener(new WindowAdapter() {
+                @Override
+                public void windowLostFocus(WindowEvent e) {
+                    SwingUtilities.invokeLater(popup::dispose);
                 }
-            }
-        };
-        listenerRef.set(listener);
-        return listener;
+            });
+
+            popup.getRootPane().registerKeyboardAction(
+                ev -> popup.dispose(),
+                KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0),
+                JComponent.WHEN_IN_FOCUSED_WINDOW
+            );
+        }
     }
 
     /**
